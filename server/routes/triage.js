@@ -110,7 +110,6 @@ triageRouter.post('/submit', verifyAuth, requireRole(['STUDENT', 'CLINICIAN', 'A
       }
     }
 
-    const store = db.getStore();
     store.triageCases.unshift(newCase);
 
     res.status(201).json({
