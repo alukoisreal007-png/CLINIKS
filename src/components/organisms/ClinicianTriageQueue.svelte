@@ -2,6 +2,7 @@
   import { clinicStore } from '../../stores/clinicStore.js';
   import { clinicRooms, timeSlots } from '../../data/mockData.js';
   import UrgencyBadge from '../molecules/UrgencyBadge.svelte';
+  import RadialTimePicker from '../molecules/RadialTimePicker.svelte';
   import ClinicalReportModal from '../molecules/ClinicalReportModal.svelte';
   import { 
     Search,
@@ -28,7 +29,9 @@
     Save,
     FileCheck,
     Send,
-    Edit3
+    Edit3,
+    Activity,
+    Zap
   } from 'lucide-svelte';
 
   $: queue = $clinicStore.triageQueue || [];
@@ -38,8 +41,14 @@
 
   // Search & Filter state for Patient List Table
   let searchQuery = '';
-  let priorityFilter = 'ALL'; // 'ALL' | 'HIGH' | 'MODERATE' | 'ROUTINE' | 'PENDING'
+  let sectionFilter = 'ALL'; // 'ALL' | 'EMERGENCY' | 'CHECK_UP' | 'AWAITING'
   let sortBy = 'URGENCY'; // 'URGENCY' | 'TIME' | 'NAME'
+
+  // Editable Brief State
+  let editableComplaint = '';
+  let editableTimeline = '';
+  let selectedUrgencyScore = 5;
+  let showSchedulerModal = false;
 
   // Clinician Encounter Action State (The Authority Zone)
   let doctorNotes = '';
@@ -57,24 +66,46 @@
     BROUGHT_IN: { icon: '👥', text: 'Accompanied' }
   };
 
+  // Section Counts
+  $: emergencyCount = queue.filter(q => 
+    q.assignedSection === 'EMERGENCY' || 
+    (q.aiBrief?.preliminaryScore >= 8) || 
+    (q.aiTriage?.suggestedPriority === 'HIGH')
+  ).length;
+
+  $: checkUpCount = queue.filter(q => 
+    q.assignedSection === 'CHECK_UP' || 
+    (q.aiBrief && q.aiBrief.preliminaryScore < 8 && q.assignedSection !== 'EMERGENCY') ||
+    (!q.assignedSection && q.aiTriage?.suggestedPriority !== 'HIGH')
+  ).length;
+
+  $: awaitingCount = queue.filter(q => 
+    q.status === 'PENDING_APPROVAL' || !q.scheduledTime
+  ).length;
+
   // Filtered and Sorted Patients
   $: filteredPatients = queue.filter(item => {
-    if (priorityFilter === 'PENDING' && item.status !== 'PENDING_APPROVAL') return false;
-    if (priorityFilter === 'HIGH' && item.aiTriage?.suggestedPriority !== 'HIGH') return false;
-    if (priorityFilter === 'MODERATE' && item.aiTriage?.suggestedPriority !== 'MODERATE') return false;
-    if (priorityFilter === 'ROUTINE' && item.aiTriage?.suggestedPriority !== 'ROUTINE') return false;
+    const isEmg = item.assignedSection === 'EMERGENCY' || (item.aiBrief?.preliminaryScore >= 8) || (item.aiTriage?.suggestedPriority === 'HIGH');
+    const isChk = item.assignedSection === 'CHECK_UP' || (!isEmg && item.assignedSection !== 'EMERGENCY');
+
+    if (sectionFilter === 'AWAITING' && item.status !== 'PENDING_APPROVAL' && item.scheduledTime) return false;
+    if (sectionFilter === 'EMERGENCY' && !isEmg) return false;
+    if (sectionFilter === 'CHECK_UP' && !isChk) return false;
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const name = (item.patientName || item.studentName || '').toLowerCase();
       const card = (item.hospitalCardNo || item.matricNo || '').toLowerCase();
       const complaint = (item.complaint || '').toLowerCase();
-      return name.includes(q) || card.includes(q) || complaint.includes(q);
+      const badge = (item.assignedBadge || '').toLowerCase();
+      return name.includes(q) || card.includes(q) || complaint.includes(q) || badge.includes(q);
     }
     return true;
   }).sort((a, b) => {
     if (sortBy === 'URGENCY') {
-      return (b.aiTriage?.urgencyScore || 0) - (a.aiTriage?.urgencyScore || 0);
+      const scoreA = a.aiBrief?.preliminaryScore || (a.aiTriage?.urgencyScore ? Math.round(a.aiTriage.urgencyScore / 10) : 5);
+      const scoreB = b.aiBrief?.preliminaryScore || (b.aiTriage?.urgencyScore ? Math.round(b.aiTriage.urgencyScore / 10) : 5);
+      return scoreB - scoreA;
     }
     if (sortBy === 'NAME') {
       const nameA = a.patientName || a.studentName || '';
@@ -94,6 +125,9 @@
 
   function handleSelectPatient(p) {
     selectedPatient = p;
+    editableComplaint = p.aiBrief?.chiefComplaint || p.complaint || '';
+    editableTimeline = p.aiBrief?.symptomTimeline || `Onset: ${p.onset || 'gradual'}. Duration: ${p.duration || '1-2 days'}. Discomfort: ${p.painScale || 5}/10`;
+    selectedUrgencyScore = p.aiBrief?.preliminaryScore || (p.aiTriage?.urgencyScore ? Math.round(p.aiTriage.urgencyScore / 10) : 5);
     assignedRoom = p.assignedRoom || p.aiTriage?.suggestedRoom || clinicRooms[0];
     assignedSession = p.assignedSession || p.aiTriage?.recommendedSession || timeSlots[0];
     doctorNotes = p.clinicianNotes || '';
@@ -102,6 +136,33 @@
 
   function handleBackToList() {
     selectedPatient = null;
+    showSchedulerModal = false;
+  }
+
+  function handleScheduleConfirm(event) {
+    const { time, isImmediate, section, score } = event.detail;
+    const finalScore = score !== undefined ? score : selectedUrgencyScore;
+
+    clinicStore.schedulePatient(selectedPatient.id, {
+      scheduledTime: time,
+      score: finalScore,
+      section: section,
+      room: assignedRoom,
+      notes: doctorNotes,
+      briefEdits: {
+        chiefComplaint: editableComplaint,
+        symptomTimeline: editableTimeline,
+        redFlags: selectedPatient.aiBrief?.redFlags || selectedPatient.aiTriage?.safetyWarnings || ['None detected (stable profile)']
+      }
+    });
+
+    showSchedulerModal = false;
+    saveFeedbackMessage = `Scheduled for ${time}. Badge issued to ${section === 'EMERGENCY' ? 'Emergency' : 'Check-Up'} Section!`;
+    setTimeout(() => saveFeedbackMessage = '', 4000);
+  }
+
+  function handleScoreSelect(val) {
+    selectedUrgencyScore = val;
   }
 
   function handleSaveDoctorNotes() {
@@ -120,9 +181,9 @@
     clinicStore.approveTriage(selectedPatient.id, {
       room: assignedRoom,
       session: assignedSession,
-      notes: doctorNotes || 'Patient called into consulting room by attending physician.'
+      notes: doctorNotes || 'Patient summoned into consulting room by attending physician.'
     });
-    saveFeedbackMessage = `Patient ${selectedPatient.patientName} called to ${assignedRoom}!`;
+    saveFeedbackMessage = `Patient ${selectedPatient.patientName} summoned to ${assignedRoom}!`;
     setTimeout(() => saveFeedbackMessage = '', 3000);
   }
 
@@ -166,7 +227,7 @@
     if (!selectedPatient) {
       if (e.key === 'Enter') {
         e.preventDefault();
-        const topCase = filteredPatients.find(p => p.aiTriage?.suggestedPriority === 'HIGH') || filteredPatients[0];
+        const topCase = filteredPatients.find(p => (p.aiBrief?.preliminaryScore >= 8) || (p.aiTriage?.suggestedPriority === 'HIGH')) || filteredPatients[0];
         if (topCase) handleSelectPatient(topCase);
       } else if (e.key === '/') {
         e.preventDefault();
@@ -176,7 +237,11 @@
     } else {
       if (e.key === 'Escape') {
         e.preventDefault();
-        handleBackToList();
+        if (showSchedulerModal) {
+          showSchedulerModal = false;
+        } else {
+          handleBackToList();
+        }
       }
     }
   }
@@ -185,229 +250,205 @@
 <svelte:window on:keydown={handleGlobalKeydown} />
 
 <!-- ========================================================================= -->
-<!-- 1. FULL PATIENT LIST WINDOW (Enterprise EHR Dense Standard)               -->
+<!-- 1. FULL PATIENT LIST WINDOW (Clean Medical EHR Standard)                  -->
 <!-- ========================================================================= -->
 {#if !selectedPatient}
-  <div class="bg-white rounded-lg border border-slate-300 shadow-xs overflow-hidden text-slate-900 animate-in fade-in duration-100">
+  <div class="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden text-slate-900 animate-in fade-in duration-100 font-sans">
     
-    <!-- Top Action & Search Bar (Dense, Structured) -->
-    <div class="p-3 sm:p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-white">
+    <!-- Top Search & Controls Bar -->
+    <div class="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-white">
       
-      <!-- Title & Live Counter -->
+      <!-- Title & Queue Counter -->
       <div class="flex items-center gap-2.5">
-        <h3 class="text-base font-bold tracking-tight text-slate-900">OPD Patient Triage Queue</h3>
-        <span class="px-2 py-0.5 rounded bg-blue-100 text-blue-900 text-[11px] font-mono font-bold border border-blue-200">
-          {queue.length} Total
+        <h3 class="text-base font-bold tracking-tight text-slate-900">OPD Patient Triage &amp; Scheduling</h3>
+        <span class="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-800 text-xs font-mono font-bold border border-slate-200">
+          {queue.length} Active
         </span>
       </div>
 
-      <!-- Controls: Search bar, Filters, Sort -->
-      <div class="flex flex-wrap items-center gap-2.5">
-        
-        <!-- Search Input with Keyboard Indicator -->
+      <!-- Controls: Search & Sort -->
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- Search -->
         <div class="relative min-w-[220px] sm:min-w-[280px]">
           <Search class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             id="clinicianSearchInput"
             type="text"
             bind:value={searchQuery}
-            placeholder="Search patient, card, complaint (Press '/')..."
-            class="w-full pl-8 pr-12 py-1.5 rounded border border-slate-300 bg-slate-50 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-[#699FDF] focus:bg-white shadow-2xs font-medium"
+            placeholder="Search patient, badge, complaint ('/')..."
+            class="w-full pl-8 pr-10 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white font-medium"
           />
-          <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400 bg-slate-200/80 px-1.5 py-0.5 rounded border border-slate-300 pointer-events-none">/</span>
+          <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400 bg-slate-200/60 px-1.5 py-0.5 rounded pointer-events-none">/</span>
         </div>
 
-        <!-- Sort Dropdown -->
+        <!-- Sort -->
         <div class="flex items-center gap-1.5 text-xs text-slate-600">
           <span class="text-slate-500 font-semibold text-[11px]">Sort:</span>
           <select
             bind:value={sortBy}
-            class="py-1.5 px-2 rounded border border-slate-300 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#699FDF] cursor-pointer shadow-2xs"
+            class="py-1.5 px-2.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer"
           >
-            <option value="URGENCY">Urgency (High first)</option>
+            <option value="URGENCY">Urgency Score (10 → 1)</option>
             <option value="NAME">Name (A-Z)</option>
-            <option value="DEFAULT">Arrival Order</option>
           </select>
         </div>
-
       </div>
     </div>
 
-    <!-- Filter Pills Bar (High-Contrast Structured Buttons) -->
-    <div class="px-3 sm:px-4 py-2 bg-slate-100/90 border-b border-slate-200 flex items-center justify-between gap-2 overflow-x-auto text-xs">
-      <div class="flex items-center gap-1.5 shrink-0">
+    <!-- Section Filter Tabs -->
+    <div class="px-4 py-2 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between gap-2 overflow-x-auto text-xs">
+      <div class="flex items-center gap-2 shrink-0">
         <button
           type="button"
-          on:click={() => priorityFilter = 'ALL'}
-          class="px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer {priorityFilter === 'ALL' ? 'bg-[#699FDF] text-white shadow-2xs' : 'text-slate-700 hover:text-slate-950 hover:bg-slate-200'}"
+          on:click={() => sectionFilter = 'ALL'}
+          class="px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer {sectionFilter === 'ALL' ? 'bg-[#0F172A] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'}"
         >
-          All ({queue.length})
+          All Patients ({queue.length})
         </button>
+
         <button
           type="button"
-          on:click={() => priorityFilter = 'PENDING'}
-          class="px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer {priorityFilter === 'PENDING' ? 'bg-[#D97706] text-white shadow-2xs' : 'text-slate-700 hover:text-amber-900 hover:bg-amber-100'}"
+          on:click={() => sectionFilter = 'AWAITING'}
+          class="px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 {sectionFilter === 'AWAITING' ? 'bg-amber-600 text-white shadow-xs' : 'text-amber-800 hover:bg-amber-100'}"
         >
-          Awaiting Review ({queue.filter(q => q.status === 'PENDING_APPROVAL').length})
+          <Clock class="w-3 h-3" />
+          <span>Awaiting Schedule ({awaitingCount})</span>
         </button>
+
         <button
           type="button"
-          on:click={() => priorityFilter = 'HIGH'}
-          class="px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer {priorityFilter === 'HIGH' ? 'bg-[#DC2626] text-white shadow-2xs' : 'text-slate-700 hover:text-red-900 hover:bg-red-100'}"
+          on:click={() => sectionFilter = 'EMERGENCY'}
+          class="px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 {sectionFilter === 'EMERGENCY' ? 'bg-red-600 text-white shadow-xs' : 'text-red-700 hover:bg-red-100'}"
         >
-          High Urgency ({queue.filter(q => q.aiTriage?.suggestedPriority === 'HIGH').length})
+          <Zap class="w-3 h-3" />
+          <span>Emergency Section ({emergencyCount})</span>
         </button>
+
         <button
           type="button"
-          on:click={() => priorityFilter = 'MODERATE'}
-          class="px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer {priorityFilter === 'MODERATE' ? 'bg-[#D97706] text-white shadow-2xs' : 'text-slate-700 hover:text-amber-900 hover:bg-amber-100'}"
+          on:click={() => sectionFilter = 'CHECK_UP'}
+          class="px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 {sectionFilter === 'CHECK_UP' ? 'bg-blue-600 text-white shadow-xs' : 'text-blue-700 hover:bg-blue-100'}"
         >
-          Moderate ({queue.filter(q => q.aiTriage?.suggestedPriority === 'MODERATE').length})
-        </button>
-        <button
-          type="button"
-          on:click={() => priorityFilter = 'ROUTINE'}
-          class="px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer {priorityFilter === 'ROUTINE' ? 'bg-[#0F172A] text-white shadow-2xs' : 'text-slate-700 hover:text-slate-950 hover:bg-slate-200'}"
-        >
-          Routine ({queue.filter(q => q.aiTriage?.suggestedPriority === 'ROUTINE').length})
+          <Activity class="w-3 h-3" />
+          <span>Check-Up Section ({checkUpCount})</span>
         </button>
       </div>
 
-      <span class="text-[11px] text-slate-500 font-mono shrink-0 hidden sm:inline">
-        [Enter] = Open Top Case &bull; [Esc] = Return
+      <span class="text-[11px] text-slate-400 font-mono shrink-0 hidden sm:inline">
+        [Enter] = Open Top Urgent &bull; [Esc] = Return
       </span>
     </div>
 
-    <!-- Patient Table (High Density, Enterprise Clinical Layout) -->
+    <!-- Patient Table -->
     <div class="overflow-x-auto">
       <table class="w-full text-left border-collapse text-xs">
         <thead>
-          <tr class="border-b-2 border-slate-300 bg-slate-100 text-slate-800 font-extrabold uppercase tracking-wider text-[11px] font-mono">
-            <th class="py-3 px-3 sm:px-4 w-14 text-center">Queue #</th>
-            <th class="py-3 px-3 sm:px-4">Patient Identity &amp; Card</th>
-            <th class="py-3 px-3">Triage Priority</th>
-            <th class="py-3 px-3">Chief Complaint &amp; Vitals</th>
-            <th class="py-3 px-3">Arrival Mode</th>
-            <th class="py-3 px-3">Check-in</th>
-            <th class="py-3 px-3">Clinical Status</th>
-            <th class="py-3 px-3 sm:px-4 text-right">Action</th>
+          <tr class="border-b border-slate-200 bg-slate-50 text-slate-600 font-bold uppercase tracking-wider text-[11px] font-mono">
+            <th class="py-3 px-4 w-28">Badge / Ref</th>
+            <th class="py-3 px-4">Patient Identity</th>
+            <th class="py-3 px-3 text-center w-28">Urgency Score</th>
+            <th class="py-3 px-3">Chief Complaint</th>
+            <th class="py-3 px-3">Scheduled Time</th>
+            <th class="py-3 px-3">Section</th>
+            <th class="py-3 px-4 text-right">Action</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-200">
+        <tbody class="divide-y divide-slate-100">
           {#if filteredPatients.length === 0}
             <tr>
-              <td colspan="8" class="text-center py-12 text-slate-600 font-bold text-sm">
+              <td colspan="7" class="text-center py-12 text-slate-500 font-medium text-xs">
                 No patients match the search or filter criteria.
               </td>
             </tr>
           {:else}
             {#each filteredPatients as patient}
+              {@const score = patient.aiBrief?.preliminaryScore || (patient.aiTriage?.urgencyScore ? Math.round(patient.aiTriage.urgencyScore / 10) : 5)}
+              {@const isEmg = patient.assignedSection === 'EMERGENCY' || score >= 8}
               <tr 
                 on:click={() => handleSelectPatient(patient)}
-                class="border-b border-slate-200/90 hover:bg-blue-50/80 hover:border-l-4 hover:border-l-[#699FDF] transition-all cursor-pointer group bg-white"
+                class="border-b border-slate-100 hover:bg-blue-50/50 hover:border-l-4 hover:border-l-blue-600 transition-all cursor-pointer group bg-white"
               >
-                <!-- Queue Number -->
-                <td class="py-3 px-3 sm:px-4 text-center font-mono font-black text-slate-900 text-xs align-middle">
-                  <span class="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-900 font-black border border-slate-300">
-                    #{patient.queueNo || patient.id?.slice(-3)}
-                  </span>
+                <!-- Badge / Queue Number -->
+                <td class="py-3 px-4 font-mono font-bold align-middle">
+                  {#if patient.assignedBadge}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold font-mono border
+                      {patient.assignedBadge.startsWith('EMG') ? 'bg-red-100 text-red-800 border-red-200' : 'bg-blue-100 text-blue-800 border-blue-200'}">
+                      {patient.assignedBadge}
+                    </span>
+                  {:else}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono text-slate-600 bg-slate-100 border border-slate-200">
+                      #{patient.queueNo || patient.id?.slice(-3)}
+                    </span>
+                  {/if}
                 </td>
 
-                <!-- Basic Info (Avatar, Name, Card Number) -->
-                <td class="py-3 px-3 sm:px-4 align-middle">
-                  <div class="flex items-center gap-2.5">
-                    <div class="relative shrink-0">
-                      <div class="w-8 h-8 rounded bg-slate-100 text-slate-950 font-black flex items-center justify-center text-xs border border-slate-300">
-                        {patient.patientName ? patient.patientName.charAt(0) : 'P'}
-                      </div>
-                      <span class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-white
-                        {patient.aiTriage?.suggestedPriority === 'HIGH' ? 'bg-[#DC2626]' : patient.aiTriage?.suggestedPriority === 'MODERATE' ? 'bg-[#D97706]' : 'bg-slate-500'}">
-                      </span>
-                    </div>
-                    <div>
-                      <p class="font-bold text-slate-950 group-hover:text-[#699FDF] transition-colors text-sm leading-tight">
-                        {patient.patientName || patient.studentName || 'Patient'}
-                      </p>
-                      <p class="text-xs text-slate-600 font-medium font-mono mt-0.5">
-                        Card: <strong class="text-slate-900 font-bold">{patient.hospitalCardNo || patient.matricNo || 'GH-OPD'}</strong> &bull; Age {patient.age || 'N/A'} ({patient.gender || 'N/A'})
-                      </p>
-                    </div>
+                <!-- Patient Identity & Card -->
+                <td class="py-3 px-4 align-middle">
+                  <div>
+                    <p class="font-bold text-slate-900 group-hover:text-blue-600 transition-colors text-xs leading-tight">
+                      {patient.patientName || patient.studentName || 'Patient'}
+                    </p>
+                    <p class="text-[11px] text-slate-500 font-mono mt-0.5">
+                      Card: <strong class="text-slate-700">{patient.hospitalCardNo || 'GH-OPD'}</strong> &bull; {patient.age || 'Adult'}y ({patient.gender || 'N/A'})
+                    </p>
                   </div>
                 </td>
 
-                <!-- Urgency Badge -->
-                <td class="py-3 px-3 align-middle">
-                  <UrgencyBadge priority={patient.aiTriage?.suggestedPriority} size="sm" />
+                <!-- Urgency Score (1-10) -->
+                <td class="py-3 px-3 align-middle text-center">
+                  <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono font-bold text-xs border
+                    {score >= 8 ? 'bg-red-50 text-red-700 border-red-200' : score >= 5 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-700 border-slate-200'}">
+                    <span class="text-sm font-extrabold">{score}</span>
+                    <span class="text-[10px] text-slate-400">/10</span>
+                  </div>
                 </td>
 
-                <!-- Chief Complaint & Severity -->
+                <!-- Chief Complaint -->
                 <td class="py-3 px-3 max-w-xs align-middle">
-                  <p class="text-xs text-slate-900 font-medium line-clamp-1 leading-snug">
+                  <p class="text-xs text-slate-900 font-medium line-clamp-1">
                     "{patient.complaint}"
                   </p>
-                  <p class="text-[11px] text-slate-600 font-mono mt-0.5">
-                    Pain: <strong class="text-slate-950 font-bold">{patient.painScale || '?'}/10</strong> &bull; Duration: <strong class="text-slate-800 font-semibold">{patient.duration || 'N/A'}</strong>
+                  <p class="text-[10px] text-slate-500 font-mono mt-0.5">
+                    Duration: {patient.duration || 'N/A'} &bull; Pain: {patient.painScale || '?'}/10
                   </p>
+                </td>
 
-                  <!-- Vitals Indicators from Nurse Station -->
-                  {#if patient.vitalsRecorded && patient.vitals}
-                    <div class="flex flex-wrap items-center gap-1 mt-1 font-mono text-[10px]">
-                      <span class="px-1.5 py-0.5 rounded {patient.vitals.hasCriticalVital ? 'bg-red-100 text-red-800 font-bold' : 'bg-blue-50 text-blue-900 font-medium border border-blue-200'}">
-                        BP: {patient.vitals.bp}
-                      </span>
-                      <span class="px-1.5 py-0.5 rounded {patient.vitals.temperature >= 37.8 ? 'bg-amber-100 text-amber-900 font-bold' : 'bg-slate-100 text-slate-800'}">
-                        {patient.vitals.temperature}°C
-                      </span>
-                      <span class="px-1.5 py-0.5 rounded {patient.vitals.spo2 <= 94 ? 'bg-red-100 text-red-800 font-bold' : 'bg-slate-100 text-slate-800'}">
-                        {patient.vitals.spo2}% SpO2
-                      </span>
-                    </div>
+                <!-- Scheduled Time -->
+                <td class="py-3 px-3 align-middle font-mono text-xs whitespace-nowrap">
+                  {#if patient.scheduledTime}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold">
+                      <Clock class="w-3 h-3 text-emerald-600" />
+                      <span>{patient.scheduledTime}</span>
+                    </span>
                   {:else}
-                    <span class="inline-block mt-1 text-[10px] font-mono text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                      Nursing Vitals Pending
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-semibold text-[11px]">
+                      <Clock class="w-3 h-3 text-amber-600" />
+                      <span>Awaiting Schedule</span>
                     </span>
                   {/if}
                 </td>
 
-                <!-- Arrival Mode -->
-                <td class="py-3 px-3 align-middle">
-                  <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-100 text-slate-800 text-[11px] font-semibold border border-slate-300 whitespace-nowrap">
-                    <span>{arrivalLabels[patient.intakeMode]?.icon || '🚶'}</span>
-                    <span>{arrivalLabels[patient.intakeMode]?.text || 'Self Walk-in'}</span>
-                  </span>
-                </td>
-
-                <!-- Waiting Time -->
-                <td class="py-3 px-3 text-slate-700 font-mono font-medium text-xs whitespace-nowrap align-middle">
-                  {patient.submittedAt || 'Just now'}
-                </td>
-
-                <!-- Status -->
-                <td class="py-3 px-3 whitespace-nowrap align-middle">
-                  {#if patient.status === 'APPROVED'}
-                    <span class="inline-flex items-center gap-1 text-[11px] font-mono font-bold text-emerald-950 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-400">
-                      ✓ IN CONSULT
-                    </span>
-                  {:else if patient.status === 'OVERRIDDEN'}
-                    <span class="inline-flex items-center gap-1 text-[11px] font-mono font-bold text-purple-950 bg-purple-100 px-2 py-0.5 rounded border border-purple-400">
-                      OVERRIDDEN
+                <!-- Section -->
+                <td class="py-3 px-3 align-middle whitespace-nowrap">
+                  {#if isEmg}
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-red-800 bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                      Emergency
                     </span>
                   {:else}
-                    <span class="inline-flex items-center gap-1 text-[11px] font-mono font-bold text-amber-950 bg-amber-100 px-2 py-0.5 rounded border border-amber-400">
-                      <span class="w-1.5 h-1.5 rounded-full bg-[#D97706] animate-pulse"></span>
-                      AWAITING DOCTOR
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                      Check-Up
                     </span>
                   {/if}
                 </td>
 
-                <!-- Action Button on Hover -->
-                <td class="py-3 px-3 sm:px-4 text-right whitespace-nowrap align-middle">
+                <!-- Action Button -->
+                <td class="py-3 px-4 text-right whitespace-nowrap align-middle">
                   <button
                     type="button"
-                    class="px-3 py-1.5 rounded bg-[#0F172A] group-hover:bg-[#699FDF] text-white font-bold text-xs transition-colors inline-flex items-center gap-1 cursor-pointer shadow-2xs border border-transparent"
+                    class="px-3 py-1.5 rounded-lg bg-slate-900 group-hover:bg-blue-600 text-white font-bold text-xs transition-colors inline-flex items-center gap-1 cursor-pointer"
                   >
-                    <span>Review Case</span>
-                    <ChevronRight class="w-3.5 h-3.5" />
+                    <span>Review &amp; Schedule</span>
+                    <ChevronRight class="w-3 h-3" />
                   </button>
                 </td>
               </tr>
@@ -417,31 +458,33 @@
       </table>
     </div>
 
-    <!-- Table Footer with stats -->
-    <div class="px-4 py-2 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-600">
-      <span class="font-mono">Showing <strong>{filteredPatients.length}</strong> of <strong>{queue.length}</strong> OPD entries</span>
-      <span class="font-medium text-slate-500 text-[11px]">CLINIKS Clinical Decision Station &bull; Outpatient Healthcare Service</span>
+    <!-- Footer -->
+    <div class="px-4 py-2.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500 font-mono">
+      <span>Showing <strong>{filteredPatients.length}</strong> of <strong>{queue.length}</strong> OPD entries</span>
+      <span>CLINIKS &bull; Decision Support &amp; Scheduling Engine</span>
     </div>
 
   </div>
 {/if}
 
 <!-- ========================================================================= -->
-<!-- 2. CLINICAL WORKSTATION / PATIENT DETAIL (Exact 3-Panel + Authority Zone) -->
+<!-- 2. CLINICAL WORKSTATION / PATIENT DETAIL & RADIAL SCHEDULER               -->
 <!-- ========================================================================= -->
 {#if selectedPatient}
-  <div class="space-y-3 text-slate-900 animate-in fade-in duration-100 pb-28">
+  {@const currentScore = selectedUrgencyScore}
+  {@const isEmergencyTier = currentScore >= 8}
+  <div class="space-y-4 text-slate-900 animate-in fade-in duration-100 pb-28 font-sans">
     
-    <!-- Top Navigation Bar & Doctor Feedback Toast -->
-    <div class="flex items-center justify-between gap-3 bg-white p-3 rounded-lg border border-slate-300 shadow-2xs">
+    <!-- Top Navigation Header -->
+    <div class="flex items-center justify-between gap-3 bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
       <div class="flex items-center gap-2 text-xs font-semibold">
         <button
           type="button"
           on:click={handleBackToList}
-          class="text-[#699FDF] hover:text-blue-800 font-bold flex items-center gap-1 cursor-pointer hover:underline"
+          class="text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 cursor-pointer"
         >
-          <ArrowLeft class="w-3.5 h-3.5" />
-          <span>Queue Table [Esc]</span>
+          <ArrowLeft class="w-4 h-4" />
+          <span>Patient Queue [Esc]</span>
         </button>
         <span class="text-slate-300 font-bold">/</span>
         <span class="text-slate-900 font-bold">{selectedPatient.patientName || selectedPatient.studentName}</span>
@@ -449,7 +492,7 @@
 
       <div class="flex items-center gap-2">
         {#if saveFeedbackMessage}
-          <span class="text-xs font-bold text-blue-900 bg-blue-100 px-2.5 py-0.5 rounded border border-blue-200 animate-in fade-in">
+          <span class="text-xs font-bold text-emerald-800 bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-200 animate-in fade-in">
             {saveFeedbackMessage}
           </span>
         {/if}
@@ -457,51 +500,53 @@
         <button
           type="button"
           on:click={handleCallPatient}
-          class="px-3.5 py-1.5 rounded bg-[#699FDF] hover:bg-[#5289CC] text-white text-xs font-bold transition-colors shadow-2xs flex items-center gap-1.5 cursor-pointer"
+          class="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
         >
           <Stethoscope class="w-3.5 h-3.5 text-white" />
-          <span>Call to Room</span>
+          <span>Summon to Room</span>
         </button>
       </div>
     </div>
 
-    <!-- 3-COLUMN WORKSTATION LAYOUT -->
+    <!-- Main 3-Column Layout -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
       
       <!-- =================================================================== -->
-      <!-- PANEL 1 (LEFT 3 COLS): QUEUE SIDEBAR (Quick Switch Between Patients)-->
+      <!-- PANEL 1 (LEFT 3 COLS): QUEUE SWITCHER                               -->
       <!-- =================================================================== -->
-      <div class="lg:col-span-3 bg-white rounded-lg border border-slate-300 p-3 shadow-2xs space-y-2.5">
-        <div class="flex items-center justify-between border-b border-slate-200 pb-2">
-          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">Live Patient Queue</span>
-          <span class="text-[10px] font-mono font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-            {queue.length} Active
+      <div class="lg:col-span-3 bg-white rounded-xl border border-slate-200 p-3.5 shadow-xs space-y-3">
+        <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400 font-mono">Queue Roster</span>
+          <span class="text-[11px] font-mono font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
+            {queue.length} Total
           </span>
         </div>
 
-        <div class="space-y-1 max-h-[640px] overflow-y-auto">
+        <div class="space-y-1.5 max-h-[600px] overflow-y-auto">
           {#each queue as item}
+            {@const itemScore = item.aiBrief?.preliminaryScore || (item.aiTriage?.urgencyScore ? Math.round(item.aiTriage.urgencyScore / 10) : 5)}
             <button
               type="button"
               on:click={() => handleSelectPatient(item)}
-              class="w-full text-left p-2 rounded border transition-all cursor-pointer flex items-center gap-2
+              class="w-full text-left p-2.5 rounded-lg border transition-all cursor-pointer flex items-center gap-2.5
                 {selectedPatient.id === item.id 
-                  ? 'border-[#699FDF] bg-blue-50 ring-1 ring-[#699FDF]/40 shadow-2xs' 
+                  ? 'border-blue-500 bg-blue-50/60 ring-1 ring-blue-500 shadow-xs' 
                   : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'}"
             >
-              <span class="w-2 h-2 rounded-full shrink-0
-                {item.aiTriage?.suggestedPriority === 'HIGH' ? 'bg-[#DC2626]' : item.aiTriage?.suggestedPriority === 'MODERATE' ? 'bg-[#D97706]' : 'bg-slate-400'}">
+              <span class="w-2.5 h-2.5 rounded-full shrink-0
+                {itemScore >= 8 ? 'bg-red-600' : itemScore >= 5 ? 'bg-amber-500' : 'bg-slate-400'}">
               </span>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center justify-between gap-1">
                   <p class="text-xs font-bold text-slate-900 truncate">
                     {item.patientName || 'Patient'}
                   </p>
-                  <span class="text-[10px] font-mono text-slate-500">#{item.queueNo || item.id?.slice(-3)}</span>
+                  <span class="text-[10px] font-mono font-bold text-slate-500">{item.assignedBadge || `#${item.queueNo || item.id?.slice(-3)}`}</span>
                 </div>
-                <p class="text-[10px] text-slate-500 truncate font-mono">
-                  {item.hospitalCardNo || 'Card: GH-OPD'} &bull; {item.submittedAt || 'Waiting'}
-                </p>
+                <div class="flex items-center justify-between text-[10px] text-slate-500 font-mono mt-0.5">
+                  <span class="truncate">{item.scheduledTime || 'Unscheduled'}</span>
+                  <span>{itemScore}/10</span>
+                </div>
               </div>
             </button>
           {/each}
@@ -509,15 +554,15 @@
       </div>
 
       <!-- =================================================================== -->
-      <!-- PANEL 2 (CENTER 5.5 COLS): THE PATIENT BRIEF & PRE-CONSULTATION CORE-->
+      <!-- PANEL 2 (CENTER 5.5 COLS): 3-PART AI BRIEF & 1-10 URGENCY SCORING   -->
       <!-- =================================================================== -->
-      <div class="lg:col-span-5 space-y-3">
+      <div class="lg:col-span-5 space-y-4">
         
-        <!-- Quick-Access Patient Summary (Core Identity at Top) -->
-        <div class="bg-white rounded-lg border border-slate-300 p-4 shadow-2xs space-y-3">
+        <!-- Patient Identity Banner -->
+        <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-xs space-y-3">
           <div class="flex items-start justify-between gap-3">
             <div class="flex items-center gap-3">
-              <div class="w-11 h-11 rounded bg-blue-50 text-[#699FDF] font-bold text-lg flex items-center justify-center border border-blue-200 shrink-0">
+              <div class="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 font-extrabold text-lg flex items-center justify-center border border-blue-200 shrink-0">
                 {selectedPatient.patientName ? selectedPatient.patientName.charAt(0) : 'P'}
               </div>
               <div>
@@ -525,9 +570,12 @@
                   <h4 class="text-base font-bold text-slate-900">
                     {selectedPatient.patientName || selectedPatient.studentName}
                   </h4>
-                  <span class="text-[10px] font-mono font-bold bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded border border-slate-300">
-                    QUEUE #{selectedPatient.queueNo || selectedPatient.id?.slice(-3)}
-                  </span>
+                  {#if selectedPatient.assignedBadge}
+                    <span class="text-[11px] font-mono font-bold px-2 py-0.5 rounded border
+                      {selectedPatient.assignedBadge.startsWith('EMG') ? 'bg-red-100 text-red-800 border-red-300' : 'bg-blue-100 text-blue-800 border-blue-300'}">
+                      {selectedPatient.assignedBadge}
+                    </span>
+                  {/if}
                 </div>
                 <p class="text-xs text-slate-500 font-mono mt-0.5">
                   Card: <strong class="text-slate-800">{selectedPatient.hospitalCardNo || 'GH-OPD'}</strong> &bull;
@@ -537,221 +585,251 @@
               </div>
             </div>
 
-            <UrgencyBadge priority={selectedPatient.aiTriage?.suggestedPriority} size="sm" />
-          </div>
-
-          <!-- Urgency & Triage Visual Alert Flags -->
-          {#if selectedPatient.aiTriage?.safetyWarnings?.length}
-            <div class="p-2.5 rounded bg-red-50 border border-red-300 text-red-950 text-xs font-medium space-y-1">
-              <div class="flex items-center gap-1.5 font-bold text-[#DC2626] uppercase tracking-wider text-[10px] font-mono">
-                <ShieldAlert class="w-3.5 h-3.5 text-[#DC2626]" />
-                <span>Urgent Clinical Protocol Alert:</span>
-              </div>
-              {#each selectedPatient.aiTriage.safetyWarnings as warning}
-                <p class="text-xs font-semibold leading-normal">• {warning}</p>
-              {/each}
+            <!-- Assigned Section Badge -->
+            <div class="text-right">
+              <span class="inline-block text-xs font-bold px-2.5 py-1 rounded-lg border font-mono
+                {isEmergencyTier ? 'bg-red-50 text-red-700 border-red-300' : 'bg-blue-50 text-blue-700 border-blue-300'}">
+                {isEmergencyTier ? 'Emergency Section' : 'Check-Up Section'}
+              </span>
             </div>
-          {/if}
+          </div>
         </div>
 
-        <!-- Structured Pre-Consultation Notes / Chief Complaints -->
-        <div class="bg-white rounded-lg border border-slate-300 p-4 shadow-2xs space-y-3">
-          <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+        <!-- ================================================================= -->
+        <!-- THE 3 AI-STRUCTURED BRIEF SECTIONS (Guaranteed Contract)         -->
+        <!-- ================================================================= -->
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-2">
             <div class="flex items-center gap-1.5">
-              <Sparkles class="w-3.5 h-3.5 text-[#699FDF]" />
+              <Sparkles class="w-4 h-4 text-blue-600" />
               <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
-                Structured Pre-Consultation Intake
+                Standardized Clinical Brief (AI Structured)
               </h5>
             </div>
-            <span class="text-[10px] font-mono text-slate-500">AI-Organized Intake</span>
+            <span class="text-[10px] font-mono text-slate-400">Low-Context Engine</span>
           </div>
 
-          <!-- Narrative Patient Brief -->
-          <div class="p-3 rounded bg-slate-50 border border-slate-200 space-y-1">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 block font-mono">Clinical Summary:</span>
-            <p class="text-xs text-slate-900 leading-relaxed font-medium">
-              {selectedPatient.aiTriage?.patientBrief || selectedPatient.complaint}
-            </p>
+          <!-- Section 1: Chief Complaint (Editable) -->
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between">
+              <label for="doctor-chief-complaint" class="text-[11px] font-bold text-slate-700 uppercase tracking-wider font-mono">
+                1. Chief Complaint:
+              </label>
+              <span class="text-[10px] text-slate-400 font-mono">Click to edit</span>
+            </div>
+            <textarea
+              id="doctor-chief-complaint"
+              rows="2"
+              bind:value={editableComplaint}
+              class="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-900 focus:bg-white focus:border-blue-500 font-medium leading-relaxed outline-none"
+            ></textarea>
           </div>
 
-          <!-- Verbatim Chief Complaint & Pain Score -->
-          <div class="space-y-2 text-xs">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 block font-mono">Reported Chief Complaint:</span>
-            <p class="text-xs text-slate-900 italic bg-white p-2.5 rounded border border-slate-200 leading-relaxed">
-              "{selectedPatient.complaint}"
-            </p>
-
-            <div class="grid grid-cols-2 gap-2 pt-1 font-mono">
-              <div class="p-2 rounded bg-slate-50 border border-slate-200">
-                <span class="text-[10px] uppercase font-bold text-slate-500 block">Pain Severity</span>
-                <strong class="text-xs {selectedPatient.painScale >= 7 ? 'text-[#DC2626]' : selectedPatient.painScale >= 4 ? 'text-[#D97706]' : 'text-slate-900'} font-bold">{selectedPatient.painScale || 'N/A'}/10</strong>
-                <span class="text-[10px] text-slate-500 font-medium">({selectedPatient.painScale >= 7 ? 'Severe' : selectedPatient.painScale >= 4 ? 'Moderate' : 'Mild'})</span>
-              </div>
-              <div class="p-2 rounded bg-slate-50 border border-slate-200">
-                <span class="text-[10px] uppercase font-bold text-slate-500 block">Symptom Duration</span>
-                <strong class="text-xs text-slate-900 font-bold">{selectedPatient.duration || 'Not specified'}</strong>
-              </div>
+          <!-- Section 2: Symptom Timeline (Editable) -->
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between">
+              <label for="doctor-symptom-timeline" class="text-[11px] font-bold text-slate-700 uppercase tracking-wider font-mono">
+                2. Symptom Timeline &amp; Onset:
+              </label>
+              <span class="text-[10px] text-slate-400 font-mono">Click to edit</span>
             </div>
+            <input
+              id="doctor-symptom-timeline"
+              type="text"
+              bind:value={editableTimeline}
+              class="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-900 focus:bg-white focus:border-blue-500 font-medium outline-none"
+            />
           </div>
 
-          <!-- Screening Vitals / Questions -->
-          {#if selectedPatient.answers?.length}
-            <div class="space-y-1 pt-1 text-xs border-t border-slate-200">
-              <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 block font-mono">Targeted Safety Screening:</span>
-              <div class="space-y-1">
-                {#each selectedPatient.answers as answer}
-                  <p class="p-2 rounded bg-slate-50 border border-slate-200 text-slate-800 text-xs font-medium">
-                    • {answer}
-                  </p>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        </div>
-
-        <!-- Stage 3 Nurse Vitals Panel (Thesis Stage 3) -->
-        <div class="bg-white rounded-lg border border-slate-300 p-4 shadow-2xs space-y-3">
-          <div class="flex items-center justify-between border-b border-slate-200 pb-2">
-            <div class="flex items-center gap-1.5">
-              <Activity class="w-3.5 h-3.5 text-[#699FDF]" />
-              <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
-                Stage 3: Nursing Vitals Observation
-              </h5>
-            </div>
-            <span class="text-[10px] font-mono font-bold {selectedPatient.vitalsRecorded ? 'text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-300' : 'text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-300'}">
-              {selectedPatient.vitalsRecorded ? 'Vitals Completed' : 'Awaiting Triage Nurse'}
+          <!-- Section 3: Red Flags (Danger Signs Pattern Match) -->
+          <div class="space-y-1.5">
+            <span class="text-[11px] font-bold text-slate-700 uppercase tracking-wider font-mono block">
+              3. Red Flags &amp; Danger Signs:
             </span>
+            <div class="space-y-1">
+              {#if selectedPatient.aiBrief?.redFlags?.length}
+                {#each selectedPatient.aiBrief.redFlags as flag}
+                  <div class="p-2.5 rounded-lg text-xs font-semibold flex items-start gap-2
+                    {flag.toLowerCase().includes('no red flags') || flag.toLowerCase().includes('stable')
+                      ? 'bg-emerald-50 text-emerald-900 border border-emerald-200' 
+                      : 'bg-red-50 text-red-950 border border-red-300'}">
+                    {#if flag.toLowerCase().includes('no red flags') || flag.toLowerCase().includes('stable')}
+                      <CheckCircle2 class="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    {:else}
+                      <ShieldAlert class="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    {/if}
+                    <span>{flag}</span>
+                  </div>
+                {/each}
+              {:else if selectedPatient.aiTriage?.safetyWarnings?.length}
+                {#each selectedPatient.aiTriage.safetyWarnings as warning}
+                  <div class="p-2.5 rounded-lg text-xs font-semibold bg-red-50 text-red-950 border border-red-300 flex items-start gap-2">
+                    <ShieldAlert class="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    <span>{warning}</span>
+                  </div>
+                {/each}
+              {:else}
+                <div class="p-2.5 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-900 border border-emerald-200 flex items-center gap-2">
+                  <CheckCircle2 class="w-4 h-4 text-emerald-600" />
+                  <span>No red flags detected (stable profile)</span>
+                </div>
+              {/if}
+            </div>
           </div>
 
-          {#if selectedPatient.vitalsRecorded && selectedPatient.vitals}
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
-              <div class="p-2 rounded bg-slate-50 border border-slate-200">
-                <span class="text-[9px] uppercase font-bold text-slate-500 block">Blood Pressure</span>
-                <strong class="text-xs {selectedPatient.vitals.hasCriticalVital ? 'text-red-700' : 'text-slate-900'}">{selectedPatient.vitals.bp}</strong>
-              </div>
-              <div class="p-2 rounded bg-slate-50 border border-slate-200">
-                <span class="text-[9px] uppercase font-bold text-slate-500 block">Temperature</span>
-                <strong class="text-xs {selectedPatient.vitals.temperature >= 37.8 ? 'text-amber-800' : 'text-slate-900'}">{selectedPatient.vitals.temperature}°C</strong>
-              </div>
-              <div class="p-2 rounded bg-slate-50 border border-slate-200">
-                <span class="text-[9px] uppercase font-bold text-slate-500 block">Oxygen (SpO2)</span>
-                <strong class="text-xs {selectedPatient.vitals.spo2 <= 94 ? 'text-red-700' : 'text-slate-900'}">{selectedPatient.vitals.spo2}%</strong>
-              </div>
-              <div class="p-2 rounded bg-slate-50 border border-slate-200">
-                <span class="text-[9px] uppercase font-bold text-slate-500 block">Heart Rate</span>
-                <strong class="text-xs text-slate-900">{selectedPatient.vitals.pulse} bpm</strong>
-              </div>
-            </div>
+          <!-- Strict Guardrail Disclaimer -->
+          <div class="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-500 leading-relaxed font-sans">
+            <strong>Decision-Support Notice:</strong> The AI engine provides pattern organization only. It does not diagnose medical conditions or prescribe drugs. Clinical assessment and final triage remain under physician authority.
+          </div>
+        </div>
 
-            <div class="flex items-center justify-between text-[10px] text-slate-500 pt-1">
-              <span>Recorded by: <strong class="text-slate-700">{selectedPatient.vitals.nurseName}</strong></span>
-              <span>{selectedPatient.vitals.recordedAt}</span>
+        <!-- ================================================================= -->
+        <!-- PRELIMINARY URGENCY SCORE (1-10) WITH 1-CLICK CLINICIAN OVERRIDE  -->
+        <!-- ================================================================= -->
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+            <div>
+              <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
+                Urgency Score &bull; Scale 1 to 10
+              </h5>
+              <p class="text-[11px] text-slate-500">Clinician can adjust or verify the 1–10 score:</p>
             </div>
-          {:else}
-            <p class="text-xs text-slate-600 bg-amber-50/60 p-2.5 rounded border border-amber-200/60 leading-relaxed">
-              Vitals not yet recorded for this patient. Patient is currently queued at Station 03 (Nursing Triage).
-            </p>
-          {/if}
+            <div class="text-right">
+              <span class="text-xl font-black font-mono {isEmergencyTier ? 'text-red-600' : 'text-blue-600'}">
+                {selectedUrgencyScore} / 10
+              </span>
+            </div>
+          </div>
+
+          <!-- 1-10 Number Selector Buttons -->
+          <div class="grid grid-cols-10 gap-1 pt-1 font-mono text-xs">
+            {#each [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as val}
+              <button
+                type="button"
+                on:click={() => handleScoreSelect(val)}
+                class="py-2 rounded-lg font-bold transition-all cursor-pointer text-center
+                  {selectedUrgencyScore === val 
+                    ? (val >= 8 ? 'bg-red-600 text-white shadow-xs' : 'bg-blue-600 text-white shadow-xs')
+                    : (val >= 8 ? 'bg-red-50 text-red-800 hover:bg-red-100' : 'bg-slate-100 text-slate-700 hover:bg-slate-200')}"
+              >
+                {val}
+              </button>
+            {/each}
+          </div>
+
+          <div class="flex justify-between text-[10px] text-slate-400 font-mono pt-0.5">
+            <span>1-4: Routine Check-Up</span>
+            <span>5-7: Priority Check-Up</span>
+            <span class="text-red-600 font-bold">8-10: Emergency Section</span>
+          </div>
         </div>
 
       </div>
 
       <!-- =================================================================== -->
-      <!-- PANEL 3 (RIGHT 3.5 COLS): RECORDS, ACTIVE FILES & DOCTOR'S NOTES   -->
+      <!-- PANEL 3 (RIGHT 3.5 COLS): RADIAL SCHEDULER & ENCOUNTER CONTROLS     -->
       <!-- =================================================================== -->
-      <div class="lg:col-span-3.5 space-y-3">
+      <div class="lg:col-span-4 space-y-4">
         
-        <!-- Doctor's Quick Notes & Impressions -->
-        <div class="bg-white rounded-lg border border-slate-300 p-4 shadow-2xs space-y-2.5">
-          <div class="flex items-center justify-between border-b border-slate-200 pb-2">
-            <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">Physician Directives</h5>
-            <span class="text-[10px] text-[#699FDF] font-bold font-mono">Attending Clinician</span>
+        <!-- Clinical Time Scheduler Card -->
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+            <div class="flex items-center gap-1.5">
+              <Clock class="w-4 h-4 text-blue-600" />
+              <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
+                Scheduled Arrival Time
+              </h5>
+            </div>
+            <span class="text-[10px] font-mono text-slate-400">Radial Clock</span>
           </div>
 
-          <!-- Medical Alert / Allergies Note -->
-          <div class="p-2 rounded bg-slate-50 border border-slate-200 text-xs space-y-0.5">
-            <span class="text-[10px] uppercase font-bold text-slate-500 block font-mono">Allergies &amp; Chronic Profile:</span>
-            <p class="font-medium text-slate-900 text-xs">
-              {selectedPatient.answers?.find(a => a.toLowerCase().includes('medication')) || 'No drug allergies or chronic comorbidities declared on intake.'}
-            </p>
+          <!-- Current Time Status -->
+          <div class="p-3.5 rounded-xl border {selectedPatient.scheduledTime ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'} space-y-1">
+            <span class="text-[10px] uppercase font-bold text-slate-500 font-mono block">Status:</span>
+            <div class="flex items-center justify-between">
+              <span class="text-base font-black font-mono {selectedPatient.scheduledTime ? 'text-emerald-950' : 'text-amber-950'}">
+                {selectedPatient.scheduledTime || 'Unscheduled (Action Required)'}
+              </span>
+              {#if selectedPatient.scheduledTime}
+                <span class="text-[10px] font-bold bg-emerald-600 text-white px-2 py-0.5 rounded font-mono">
+                  CONFIRMED
+                </span>
+              {/if}
+            </div>
+          </div>
+
+          <!-- Open Radial Scheduler Modal Button -->
+          <button
+            type="button"
+            on:click={() => showSchedulerModal = true}
+            class="w-full py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs flex items-center justify-center gap-2"
+          >
+            <Clock class="w-4 h-4" />
+            <span>{selectedPatient.scheduledTime ? 'Modify Scheduled Slot' : 'Pick Time on Radial Clock'}</span>
+          </button>
+        </div>
+
+        <!-- Physician Directives & Notes -->
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+            <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">Physician Directives</h5>
+            <span class="text-[10px] text-blue-600 font-bold font-mono">Attending Clinician</span>
+          </div>
+
+          <!-- Room Assignment Dropdown -->
+          <div class="space-y-1">
+            <label for="doctor-room-select" class="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono">
+              Assigned Consulting Room:
+            </label>
+            <select
+              id="doctor-room-select"
+              bind:value={assignedRoom}
+              class="w-full p-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-900 focus:border-blue-500 outline-none cursor-pointer"
+            >
+              {#each clinicRooms as room}
+                <option value={room}>{room}</option>
+              {/each}
+            </select>
           </div>
 
           <!-- Notes Textarea -->
           <div class="space-y-1">
-            <label for="doctor-notes-input" class="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono">
-              Clinical Observations &amp; Directives:
+            <label for="doctor-notes-field" class="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono">
+              Examination Notes / Directives:
             </label>
             <textarea
-              id="doctor-notes-input"
+              id="doctor-notes-field"
               rows="3"
               bind:value={doctorNotes}
-              placeholder="Enter clinical examination notes, vitals taken, treatment directives..."
-              class="w-full p-2 rounded border border-slate-300 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-[#699FDF] shadow-2xs font-medium"
+              placeholder="Enter examination directives, treatment notes, prescriptions..."
+              class="w-full p-2.5 rounded-lg border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 font-medium outline-none"
             ></textarea>
           </div>
 
           <button
             type="button"
             on:click={handleSaveDoctorNotes}
-            class="w-full py-1.5 rounded bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-bold transition-colors cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
+            class="w-full py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5"
           >
             <Save class="w-3.5 h-3.5" />
-            <span>Save Clinical Notes</span>
+            <span>Save Clinical Directives</span>
           </button>
         </div>
 
-        <!-- Recent Medical History & Active Records -->
-        <div class="bg-white rounded-lg border border-slate-300 p-4 shadow-2xs space-y-2.5">
-          <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono border-b border-slate-200 pb-2">
-            Historical Outpatient Encounters
-          </h5>
-
-          <div class="space-y-2 text-xs">
-            <div class="p-2.5 rounded bg-slate-50 border border-slate-200 space-y-0.5">
-              <div class="flex items-center justify-between">
-                <strong class="text-slate-900 text-xs">Previous OPD Encounter</strong>
-                <span class="text-[10px] text-slate-500 font-mono">14 Oct 2025</span>
-              </div>
-              <p class="text-slate-700 text-[11px]">Acute Pharyngitis &bull; Managed &amp; Discharged</p>
-            </div>
-
-            <div class="p-2.5 rounded bg-slate-50 border border-slate-200 space-y-0.5">
-              <div class="flex items-center justify-between">
-                <strong class="text-slate-900 text-xs">Hospital Card Issued</strong>
-                <span class="text-[10px] text-slate-500 font-mono">03 Mar 2024</span>
-              </div>
-              <p class="text-slate-700 text-[11px]">Card {selectedPatient.hospitalCardNo || 'GH-OPD'} registered at Central Records.</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Lab Results & Encounter PDFs -->
-        <div class="bg-white rounded-lg border border-slate-300 p-3 shadow-2xs space-y-2">
-          <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
-            Files &amp; Requisitions
-          </h5>
+        <!-- Documentation & PDF view -->
+        <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-xs space-y-2">
+          <h5 class="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">Official PDF Records</h5>
           <div class="space-y-1.5 text-xs">
             <button
               type="button"
               on:click={() => showClinicalReportModal = true}
-              class="w-full p-2 rounded bg-slate-50 hover:bg-blue-50/70 border border-slate-200 flex items-center justify-between cursor-pointer transition-colors text-left"
+              class="w-full p-2 rounded-lg bg-slate-50 hover:bg-blue-50 border border-slate-200 flex items-center justify-between cursor-pointer transition-colors text-left"
             >
               <div class="flex items-center gap-2">
-                <FileText class="w-3.5 h-3.5 text-[#699FDF]" />
+                <FileText class="w-3.5 h-3.5 text-blue-600" />
                 <span class="font-medium text-slate-900 text-xs truncate max-w-[170px]">Official_Prescription_Slip.pdf</span>
               </div>
-              <span class="text-[10px] text-[#699FDF] font-mono font-bold">View / Print</span>
-            </button>
-            <button
-              type="button"
-              on:click={() => showClinicalReportModal = true}
-              class="w-full p-2 rounded bg-slate-50 hover:bg-blue-50/70 border border-slate-200 flex items-center justify-between cursor-pointer transition-colors text-left"
-            >
-              <div class="flex items-center gap-2">
-                <FileCheck class="w-3.5 h-3.5 text-[#699FDF]" />
-                <span class="font-medium text-slate-900 text-xs">Official_Triage_Record.pdf</span>
-              </div>
-              <span class="text-[10px] text-emerald-700 font-bold font-mono">Verified</span>
+              <span class="text-[10px] text-blue-600 font-mono font-bold">Print Slip</span>
             </button>
           </div>
         </div>
@@ -761,40 +839,28 @@
     </div>
 
     <!-- ========================================================================= -->
-    <!-- FLOATING ACTION BAR: CLINICIAN ACTION CONTROLS (THE AUTHORITY ZONE)       -->
+    <!-- FLOATING ACTION BAR: CLINICIAN ROUTING & FINAL SIGN-OFF                   -->
     <!-- ========================================================================= -->
-    <div class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-300 shadow-2xl p-3 animate-in slide-in-from-bottom-2 duration-100">
+    <div class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 shadow-xl p-3">
       <div class="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-3">
         
-        <!-- Left: Room Assignment & Active Patient -->
         <div class="flex items-center gap-3">
           <div class="hidden sm:block">
-            <p class="text-[10px] uppercase font-bold text-slate-500 tracking-wider font-mono">Active Consultation</p>
-            <p class="text-xs font-bold text-slate-900">{selectedPatient.patientName} (#{selectedPatient.queueNo})</p>
+            <p class="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-mono">Selected Case</p>
+            <p class="text-xs font-bold text-slate-900">{selectedPatient.patientName} ({selectedPatient.assignedBadge || `#${selectedPatient.queueNo}`})</p>
           </div>
-
-          <div class="flex items-center gap-2">
-            <label for="floating-room" class="text-xs font-bold text-slate-700 shrink-0">Room:</label>
-            <select
-              id="floating-room"
-              bind:value={assignedRoom}
-              class="text-xs font-semibold py-1 px-2.5 rounded border border-slate-300 bg-white text-slate-900 focus:outline-none focus:border-[#699FDF] shadow-2xs"
-            >
-              {#each clinicRooms as room}
-                <option value={room}>{room}</option>
-              {/each}
-            </select>
+          <div class="text-xs font-mono font-bold px-2.5 py-1 rounded-lg border {isEmergencyTier ? 'bg-red-50 text-red-800 border-red-200' : 'bg-blue-50 text-blue-800 border-blue-200'}">
+            Score: {selectedUrgencyScore}/10 &bull; {isEmergencyTier ? 'Emergency Section' : 'Check-Up Section'}
           </div>
         </div>
 
-        <!-- Center: 4 Prominent Clinical Routing Controls (Authority Zone) -->
+        <!-- 4 Routing Controls -->
         <div class="flex items-center gap-1.5 flex-wrap">
           <button
             type="button"
             on:click={() => encounterOutcome = 'LAB'}
-            class="px-2.5 py-1.5 rounded text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
-              {encounterOutcome === 'LAB' ? 'bg-[#699FDF] text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-800'}"
-            title="Order Laboratory / Diagnostic Investigation"
+            class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
+              {encounterOutcome === 'LAB' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}"
           >
             <FlaskConical class="w-3.5 h-3.5" />
             <span>Send to Lab</span>
@@ -803,9 +869,8 @@
           <button
             type="button"
             on:click={() => encounterOutcome = 'PRESCRIPTION'}
-            class="px-2.5 py-1.5 rounded text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
-              {encounterOutcome === 'PRESCRIPTION' ? 'bg-[#699FDF] text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-800'}"
-            title="Send to Pharmacy with Prescriptions"
+            class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
+              {encounterOutcome === 'PRESCRIPTION' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}"
           >
             <Pill class="w-3.5 h-3.5" />
             <span>Send to Pharmacy</span>
@@ -814,9 +879,8 @@
           <button
             type="button"
             on:click={() => encounterOutcome = 'DISCHARGE'}
-            class="px-2.5 py-1.5 rounded text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
-              {encounterOutcome === 'DISCHARGE' ? 'bg-emerald-700 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-800'}"
-            title="Discharge Patient with Advice"
+            class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
+              {encounterOutcome === 'DISCHARGE' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}"
           >
             <Home class="w-3.5 h-3.5" />
             <span>Discharge</span>
@@ -825,31 +889,43 @@
           <button
             type="button"
             on:click={() => encounterOutcome = 'REFERRAL'}
-            class="px-2.5 py-1.5 rounded text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
-              {encounterOutcome === 'REFERRAL' ? 'bg-[#DC2626] text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-800'}"
-            title="Refer to Specialist Hospital / Unit"
+            class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5
+              {encounterOutcome === 'REFERRAL' ? 'bg-red-600 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}"
           >
             <Ambulance class="w-3.5 h-3.5" />
             <span>Emergency Referral</span>
           </button>
         </div>
 
-        <!-- Right: Primary Clinician Authority Sign-Off Button -->
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            on:click={handleCompleteEncounter}
-            class="w-full sm:w-auto px-4 py-1.5 rounded bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
-          >
-            <Check class="w-3.5 h-3.5 text-[#699FDF] stroke-[3]" />
-            <span>{isSavingOutcome ? 'Signing...' : 'Clinician Sign-Off & Complete'}</span>
-          </button>
-        </div>
+        <!-- Primary Sign-Off -->
+        <button
+          type="button"
+          on:click={handleCompleteEncounter}
+          class="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+        >
+          <Check class="w-4 h-4 text-emerald-400 stroke-[3]" />
+          <span>{isSavingOutcome ? 'Signing...' : 'Clinician Sign-Off & Complete'}</span>
+        </button>
 
       </div>
     </div>
 
   </div>
+
+  <!-- ========================================================================= -->
+  <!-- RADIAL TIME PICKER MODAL (Hard Conflict Blocker Included)                 -->
+  <!-- ========================================================================= -->
+  {#if showSchedulerModal}
+    <div class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+      <RadialTimePicker
+        currentPatient={selectedPatient}
+        existingAppointments={queue}
+        preliminaryScore={selectedUrgencyScore}
+        on:confirm={handleScheduleConfirm}
+        on:close={() => showSchedulerModal = false}
+      />
+    </div>
+  {/if}
 
   {#if selectedPatient}
     <ClinicalReportModal
