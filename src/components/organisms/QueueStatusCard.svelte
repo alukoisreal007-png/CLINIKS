@@ -390,19 +390,19 @@ Patient referred to Central Pathology Collection window.`,
   <!-- ========================================================================= -->
   <div class="rounded-2xl border-2 {cfg.border} {cfg.bg} overflow-hidden shadow-xs">
 
-    <!-- Priority Header Bar -->
+    <!-- Priority & Section Header Bar -->
     <div class="px-4 py-3 flex items-center justify-between gap-4 border-b {cfg.border}">
       <div class="flex items-center gap-2.5">
         <span class="relative flex h-2.5 w-2.5">
           <span class="animate-ping absolute inline-flex h-full w-full rounded-full {cfg.dot} opacity-60"></span>
           <span class="relative inline-flex rounded-full h-2.5 w-2.5 {cfg.dot}"></span>
         </span>
-        <span class="text-xs font-mono font-bold uppercase tracking-wider {cfg.badge.includes('rose') ? 'text-rose-900' : cfg.badge.includes('amber') ? 'text-amber-900' : 'text-slate-800'}">
-          {cfg.label}
+        <span class="text-xs font-mono font-bold uppercase tracking-wider {cfg.badge.includes('rose') || cfg.badge.includes('red') ? 'text-red-900' : cfg.badge.includes('amber') ? 'text-amber-900' : 'text-slate-800'}">
+          {appt.assignedSection === 'EMERGENCY' ? 'EMERGENCY SECTION' : 'CHECK-UP SECTION'}
         </span>
       </div>
-      <span class="text-[11px] px-2 py-0.5 rounded font-mono font-bold {cfg.badge}">
-        TRIAGE SCORE: {appt.aiTriage?.urgencyScore || 0} / 100
+      <span class="text-[11px] px-2.5 py-0.5 rounded font-mono font-bold {cfg.badge}">
+        URGENCY SCORE: {appt.aiBrief?.preliminaryScore || Math.round((appt.aiTriage?.urgencyScore || 50) / 10) || 5} / 10
       </span>
     </div>
 
@@ -411,14 +411,16 @@ Patient referred to Central Pathology Collection window.`,
       <div>
         <div class="flex items-center gap-1.5 mb-1">
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wider font-mono">System-Issued OPD Queue Ticket</p>
+          <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wider font-mono">Assigned OPD Queue Badge</p>
         </div>
-        <p class="text-6xl sm:text-7xl font-black text-slate-900 leading-none tracking-tight font-mono">
-          #{appt.queueNo || appt.id?.slice(-3) || '001'}
+        <p class="text-5xl sm:text-6xl font-black text-slate-900 leading-none tracking-tight font-mono">
+          {appt.assignedBadge || `#${appt.queueNo || appt.id?.slice(-3) || '001'}`}
         </p>
-        <p class="text-[11px] text-slate-500 font-mono pt-1">
-          Intake: {appt.submittedAt || 'Just now'} &bull; Station: {appt.assignedRoom || 'Room 101'}
-        </p>
+        <div class="flex flex-wrap items-center gap-2 text-xs font-mono pt-2 text-slate-600">
+          <span>Arrival Slot: <strong class="text-slate-900">{appt.scheduledTime || 'Awaiting Doctor Schedule'}</strong></span>
+          <span>&bull;</span>
+          <span>Station: <strong class="text-slate-900">{appt.assignedRoom || 'Room 101'}</strong></span>
+        </div>
       </div>
 
       <!-- Wait time or Consulted Status -->
