@@ -1,465 +1,417 @@
 <script>
   import { clinicStore } from '../stores/clinicStore.js';
-  import Card from '../components/atoms/Card.svelte';
-  import Button from '../components/atoms/Button.svelte';
-  import Badge from '../components/atoms/Badge.svelte';
-  import StudentIntakeWizard from '../components/organisms/StudentIntakeWizard.svelte';
-  import StaffAssistedIntake from '../components/organisms/StaffAssistedIntake.svelte';
+  import { generateDoctorBrief } from '../lib/aiTriageEngine.js';
   import { 
-    Stethoscope, 
-    ArrowRight, 
-    ArrowLeft, 
-    Calendar, 
-    Clock, 
-    MapPin, 
-    User, 
-    FileText, 
+    Activity, 
     CheckCircle2, 
-    HeartPulse, 
-    Building2,
-    Check,
+    ArrowLeft, 
+    Clock, 
+    Zap, 
+    ShieldAlert, 
     Sparkles,
-    Shield,
-    Lock,
-    AlertCircle,
-    Users
+    User,
+    Check,
+    AlertCircle
   } from 'lucide-svelte';
 
   $: currentUser = $clinicStore.currentUser;
-  $: student = currentUser?.profile || {};
+  $: profile = currentUser?.profile || {};
 
-  // Mode: Patient Self-Service vs OPD Desk-Assisted (Thesis Section 11 & 13)
-  let isDeskAssisted = false;
+  // Patient Identity
+  let patientName = profile.name || '';
+  let hospitalCardNo = profile.hospitalCardNo || 'GH-2026-00831';
+  let age = profile.age || '34';
+  let gender = profile.gender || 'Female';
 
-  // 2-Step Flow:
-  // Step 1: "Book a Consultant" Form (Visit type, preferred date)
-  // Step 2: "Pre-Questionnaire" Page (AI Voice Assistant with Uiverse Oval & all questions)
-  let currentStep = 1;
+  // Clinical Questions
+  let complaint = '';
+  let onset = 'sudden'; // 'sudden' | 'gradual'
+  let duration = '1 to 2 days';
+  let painScale = 5;
 
-  // Book a Consultant Form State (Initially unselected so completion is required)
-  let visitType = '';
-  let preferredDate = '';
-  let consultantPreference = 'First Available Attending Physician';
-  let patientNotes = '';
+  // State
+  let isSubmitting = false;
+  let submittedCase = null;
 
-  let showValidationErrors = false;
-
-  $: isVisitTypeSelected = !!visitType;
-  $: isDateSelected = !!preferredDate;
-  
-  // Total completed sections (out of 2 required)
-  $: completedCount = [isVisitTypeSelected, isDateSelected].filter(Boolean).length;
-  $: isBookingComplete = completedCount === 2;
-
-  const visitTypes = [
-    {
-      id: 'general',
-      title: 'General Medical Consultation',
-      desc: 'Fever, cough, body pain, malaria symptoms, or general discomfort',
-      icon: Stethoscope
-    },
-    {
-      id: 'urgent',
-      title: 'Urgent Care / Acute Triage',
-      desc: 'Asthma flare-up, severe pain, cuts, sprains, or sudden acute illness',
-      icon: HeartPulse
-    },
-    {
-      id: 'refill',
-      title: 'Routine Prescription Refill',
-      desc: 'Maintenance medication renewal, inhaler refills, or ongoing care',
-      icon: FileText
-    },
-    {
-      id: 'clearance',
-      title: 'Academic & Sports Clearance',
-      desc: 'Faculty medical fitness certificate, sports league health screening',
-      icon: CheckCircle2
-    }
+  const durationOptions = [
+    'Less than 6 hours',
+    '1 to 2 days',
+    '3 to 5 days',
+    'More than a week'
   ];
 
-  const dates = [
-    'Today (Earliest Available)',
-    'Tomorrow Morning',
-    'Custom Date / Scheduled Follow-up'
-  ];
-
-  function handleProceedToQuestionnaire() {
-    if (!isBookingComplete) {
-      showValidationErrors = true;
-      window.scrollTo({ top: 120, behavior: 'smooth' });
+  function handleSubmit() {
+    if (!complaint.trim()) {
+      alert('Please describe your chief complaint.');
       return;
     }
-    showValidationErrors = false;
-    currentStep = 2;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
 
-  function tryGoToStep(step) {
-    if (step === 2) {
-      if (!isBookingComplete) {
-        showValidationErrors = true;
-        window.scrollTo({ top: 120, behavior: 'smooth' });
-        return;
+    isSubmitting = true;
+
+    // Generate guardrailed brief and 1-10 score via optimized engine
+    const brief = generateDoctorBrief({
+      complaint: complaint.trim(),
+      onset,
+      duration,
+      painScale,
+      patient: { name: patientName, age, gender, hospitalCardNo }
+    });
+
+    const newPatientEntry = {
+      id: `TRG-${Date.now().toString().slice(-4)}`,
+      queueNo: String(($clinicStore.triageQueue?.length || 0) + 1).padStart(3, '0'),
+      patientName: patientName.trim() || 'Patient',
+      hospitalCardNo: hospitalCardNo.trim() || 'GH-2026-00831',
+      age: age || '30',
+      gender: gender || 'Female',
+      complaint: complaint.trim(),
+      onset,
+      duration,
+      painScale,
+      submittedAt: 'Just now',
+      status: 'PENDING_APPROVAL', // Waiting for doctor review & scheduling
+      scheduledTime: null, // To be assigned by doctor using Radial Time Picker
+      assignedBadge: null, // e.g. EMG-001 or CHK-014
+      assignedSection: null, // 'EMERGENCY' | 'CHECK_UP'
+      aiBrief: brief,
+      // Backward compatibility fields
+      aiTriage: {
+        suggestedPriority: brief.isEmergency ? 'HIGH' : (brief.preliminaryScore >= 5 ? 'MODERATE' : 'ROUTINE'),
+        urgencyScore: brief.preliminaryScore * 10,
+        patientBrief: `${brief.chiefComplaint} ${brief.symptomTimeline}`,
+        safetyWarnings: brief.redFlags,
+        source: 'CLINIKS_AI_ENGINE'
       }
-    }
-    showValidationErrors = false;
-    currentStep = step;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    // Add to clinic store
+    clinicStore.update(state => ({
+      ...state,
+      triageQueue: [newPatientEntry, ...(state.triageQueue || [])],
+      activePatientAppointment: newPatientEntry,
+      systemNotification: {
+        type: 'success',
+        message: 'Pre-consultation brief submitted. Awaiting doctor review & scheduling.'
+      }
+    }));
+
+    submittedCase = newPatientEntry;
+    isSubmitting = false;
   }
 
-  function handleBackToBooking() {
-    currentStep = 1;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  function goToDashboard() {
+    clinicStore.setTab('PATIENT_DASHBOARD');
   }
 
-  function handleBookingComplete() {
-    clinicStore.setTab('STUDENT_DASHBOARD');
+  function resetNewIntake() {
+    submittedCase = null;
+    complaint = '';
+    onset = 'sudden';
+    duration = '1 to 2 days';
+    painScale = 5;
   }
 </script>
 
-<div class="max-w-4xl mx-auto space-y-6 py-4">
-
-  <!-- 1-Click Mode Toggle: Patient Self-Service vs OPD Staff-Assisted (Thesis Section 11 & 13) -->
-  <div class="bg-slate-100 p-2.5 rounded-2xl border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-    <div class="flex items-center gap-2 pl-2">
-      <Users class="w-4 h-4 text-[#699FDF]" />
-      <span class="font-bold text-slate-800">OPD Intake Mode:</span>
-      <span class="text-slate-500 font-mono">
-        {isDeskAssisted ? 'Desk-Assisted Walk-In (Clerk/Nurse Tablet)' : 'Patient Self-Service (Smartphone)'}
-      </span>
-    </div>
-
-    <div class="flex items-center bg-white rounded-xl p-1 border border-slate-200 shadow-2xs">
-      <button
-        type="button"
-        on:click={() => isDeskAssisted = false}
-        class="px-3.5 py-1.5 rounded-lg font-bold text-xs transition-all cursor-pointer { !isDeskAssisted ? 'bg-[#0F172A] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}"
-      >
-        Self-Service (App)
-      </button>
-      <button
-        type="button"
-        on:click={() => isDeskAssisted = true}
-        class="px-3.5 py-1.5 rounded-lg font-bold text-xs transition-all cursor-pointer { isDeskAssisted ? 'bg-[#699FDF] text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}"
-      >
-        Desk-Assisted (Walk-In)
-      </button>
-    </div>
-  </div>
-
-  {#if isDeskAssisted}
-    <!-- STAFF-ASSISTED WALK-IN INTAKE -->
-    <StaffAssistedIntake />
-  {:else}
-
-  <!-- Top Navigation & Stepper Header -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200">
-    <div class="flex items-center gap-3">
-      <button
-        type="button"
-        on:click={() => clinicStore.setTab('STUDENT_DASHBOARD')}
-        class="p-2 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold text-xs inline-flex items-center gap-1.5 transition-colors cursor-pointer"
-      >
-        <ArrowLeft class="w-4 h-4" />
-        <span>Back to Dashboard</span>
-      </button>
-
-      <div>
-        <h2 class="text-xl sm:text-2xl font-black text-slate-950 tracking-tight">
-          {currentStep === 1 ? 'Book a Consultant' : 'Pre-Consultation Clinical Questionnaire'}
-        </h2>
-        <p class="text-xs text-slate-600 font-medium">
-          Step {currentStep} of 2 &bull; {currentStep === 1 ? 'Booking Details (Required)' : 'AI Clinical Symptom Intake'}
-        </p>
-      </div>
-    </div>
-
-    <!-- Stepper indicator pills -->
-    <div class="flex items-center gap-2">
-      <button 
-        type="button" 
-        on:click={() => tryGoToStep(1)}
-        class="px-3.5 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5
-          {currentStep === 1 ? 'bg-emerald-700 text-white shadow-xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}"
-      >
-        <span class="w-4 h-4 rounded-full {isBookingComplete ? 'bg-emerald-500 text-white' : 'bg-white/20'} flex items-center justify-center text-[10px]">
-          {#if isBookingComplete}&check;{:else}1{/if}
-        </span>
-        <span>Booking Details</span>
-      </button>
-
-      <span class="text-slate-400 font-bold">&rarr;</span>
-
-      <button 
-        type="button" 
-        on:click={() => tryGoToStep(2)}
-        title={!isBookingComplete ? "Complete all booking sections to unlock pre-questionnaire" : "Proceed to pre-questionnaire"}
-        class="px-3.5 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5
-          {currentStep === 2 
-            ? 'bg-emerald-700 text-white shadow-xs cursor-pointer' 
-            : isBookingComplete 
-              ? 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-300 cursor-pointer' 
-              : 'bg-slate-100 text-slate-400 cursor-not-allowed opacity-70'}"
-      >
-        <span class="w-4 h-4 rounded-full {isBookingComplete ? 'bg-emerald-600 text-white' : 'bg-slate-300 text-slate-700'} flex items-center justify-center text-[10px]">
-          {#if !isBookingComplete}
-            <Lock class="w-2.5 h-2.5" />
-          {:else}
-            2
-          {/if}
-        </span>
-        <span>Pre-Questionnaire</span>
-      </button>
-    </div>
-  </div>
-
-  <!-- Verified Student Header Strip -->
-  <div class="p-4 rounded-2xl bg-slate-900 text-white flex flex-wrap items-center justify-between gap-4 shadow-sm">
-    <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black">
-        {student.name ? student.name.slice(0, 2).toUpperCase() : 'ST'}
-      </div>
-      <div>
-        <p class="text-sm font-extrabold text-white">{student.name || 'Verified Student'}</p>
-        <p class="text-xs text-slate-300 font-mono">
-          {#if student.matricNo}
-            Matric: <strong class="text-emerald-400">{student.matricNo}</strong>
-          {/if}
-          {#if student.matricNo && student.jajaNo} &bull; {/if}
-          {#if student.jajaNo}
-            Jaja: <strong class="text-emerald-400">{student.jajaNo}</strong>
-          {/if}
-          {#if !student.matricNo && !student.jajaNo}
-            <span>Student Portal Session</span>
-          {/if}
-        </p>
-      </div>
-    </div>
-    <div class="text-xs text-slate-300 flex items-center gap-3">
-      <span>{student.department ? `${student.department}` : ''}{student.faculty ? ` • ${student.faculty}` : ''}</span>
-      <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold {isBookingComplete ? 'bg-emerald-800 text-emerald-200' : 'bg-amber-800 text-amber-200'}">
-        {completedCount}/2 Sections Selected
-      </span>
-    </div>
-  </div>
-
-  <!-- ========================================================================= -->
-  <!-- STEP 1: DEDICATED "BOOK A CONSULTANT" FORM                                -->
-  <!-- ========================================================================= -->
-  {#if currentStep === 1}
-    <div class="space-y-6 animate-in slide-in-from-left-4 duration-150">
+<div class="max-w-3xl mx-auto py-8 px-4 sm:px-6 font-sans">
+  
+  {#if !submittedCase}
+    <!-- ========================================================================= -->
+    <!-- PATIENT INTAKE FORM (Clean, Calm, Single-Column Layout)                    -->
+    <!-- ========================================================================= -->
+    <div class="space-y-8 animate-in fade-in duration-150">
       
-      <!-- Validation Error Banner (When user tries to proceed without completing all sections) -->
-      {#if showValidationErrors && !isBookingComplete}
-        <div class="p-4 rounded-2xl bg-rose-50 border-2 border-rose-300 text-rose-950 flex items-start gap-3.5 shadow-sm animate-in fade-in duration-200">
-          <AlertCircle class="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-          <div class="space-y-1">
-            <p class="font-extrabold text-sm text-rose-950">
-              Cannot Proceed to Pre-Questionnaire Yet
-            </p>
-            <p class="text-xs text-rose-800 font-medium">
-              Please complete all required sections in the booking details before going to the questionnaire.
-              Missing: 
-              <span class="font-bold underline">
-                {[
-                  !isVisitTypeSelected && 'Visit Category',
-                  !isDateSelected && 'Consultation Date'
-                ].filter(Boolean).join(', ')}
-              </span>.
-            </p>
+      <!-- Top Header -->
+      <div class="flex items-center justify-between border-b border-slate-200 pb-4">
+        <button
+          type="button"
+          on:click={goToDashboard}
+          class="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-900 transition-colors cursor-pointer"
+        >
+          <ArrowLeft class="w-4 h-4" />
+          <span>Back to Dashboard</span>
+        </button>
+
+        <span class="text-xs font-mono font-medium text-slate-400">
+          Stage 1: Pre-Consultation Intake
+        </span>
+      </div>
+
+      <div class="space-y-2">
+        <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+          Pre-Consultation Symptom Intake
+        </h1>
+        <p class="text-sm text-slate-600 leading-relaxed">
+          Please describe your illness. The AI organizes your symptoms into an organized clinical brief for the doctor to review and schedule your appointment.
+        </p>
+      </div>
+
+      <!-- Main Form Card -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs space-y-7">
+        
+        <!-- 1. Patient Demographics Summary -->
+        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-3">
+          <div class="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wider font-mono">
+            <User class="w-4 h-4 text-blue-600" />
+            <span>Patient Information</span>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+            <div>
+              <span class="text-slate-400 block text-[11px]">Full Name</span>
+              <input
+                type="text"
+                bind:value={patientName}
+                placeholder="Patient Name"
+                class="w-full mt-1 p-2 rounded-lg border border-slate-200 bg-white font-medium text-slate-900 text-xs outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <span class="text-slate-400 block text-[11px]">Card Number</span>
+              <input
+                type="text"
+                bind:value={hospitalCardNo}
+                placeholder="GH-2026-XXXXX"
+                class="w-full mt-1 p-2 rounded-lg border border-slate-200 bg-white font-mono font-medium text-slate-900 text-xs outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <span class="text-slate-400 block text-[11px]">Age (Years)</span>
+              <input
+                type="number"
+                bind:value={age}
+                class="w-full mt-1 p-2 rounded-lg border border-slate-200 bg-white font-medium text-slate-900 text-xs outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <span class="text-slate-400 block text-[11px]">Gender</span>
+              <select
+                bind:value={gender}
+                class="w-full mt-1 p-2 rounded-lg border border-slate-200 bg-white font-medium text-slate-900 text-xs outline-none focus:border-blue-500"
+              >
+                <option value="Female">Female</option>
+                <option value="Male">Male</option>
+              </select>
+            </div>
           </div>
         </div>
-      {/if}
 
-      <!-- Card: Appointment Setup -->
-      <Card className="p-6 sm:p-9 shadow-sm border border-slate-200 bg-white space-y-8 rounded-2xl sm:rounded-3xl">
-        
-        <!-- Header -->
-        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
-          <div>
-            <span class="text-xs font-black uppercase tracking-wider text-emerald-800 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-              Section 1 of 2: Appointment Parameters
+        <!-- 2. Chief Complaint -->
+        <div class="space-y-2">
+          <label for="intake-complaint" class="block text-xs font-bold text-slate-900 uppercase tracking-wider">
+            Chief Complaint &bull; What are you experiencing today? *
+          </label>
+          <textarea
+            id="intake-complaint"
+            bind:value={complaint}
+            rows="4"
+            placeholder="e.g. Severe throbbing headache and high fever since this morning, body aches and feeling dizzy..."
+            class="w-full p-4 rounded-xl border border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 text-sm text-slate-900 outline-none leading-relaxed"
+          ></textarea>
+        </div>
+
+        <!-- 3. Onset: Sudden vs. Gradual -->
+        <div class="space-y-2">
+          <span class="block text-xs font-bold text-slate-900 uppercase tracking-wider">
+            Onset &bull; How quickly did your symptoms start? *
+          </span>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              on:click={() => onset = 'sudden'}
+              class="p-4 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-3
+                {onset === 'sudden' ? 'border-blue-500 bg-blue-50/60 ring-1 ring-blue-500' : 'border-slate-200 hover:border-slate-300 bg-white'}"
+            >
+              <div class="w-8 h-8 rounded-lg {onset === 'sudden' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'} flex items-center justify-center shrink-0 mt-0.5">
+                <Zap class="w-4 h-4" />
+              </div>
+              <div>
+                <h4 class="text-sm font-bold text-slate-900">Sudden Onset</h4>
+                <p class="text-xs text-slate-500 mt-0.5 leading-snug">
+                  Started abruptly within minutes or a few hours. Acute discomfort.
+                </p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              on:click={() => onset = 'gradual'}
+              class="p-4 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-3
+                {onset === 'gradual' ? 'border-blue-500 bg-blue-50/60 ring-1 ring-blue-500' : 'border-slate-200 hover:border-slate-300 bg-white'}"
+            >
+              <div class="w-8 h-8 rounded-lg {onset === 'gradual' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'} flex items-center justify-center shrink-0 mt-0.5">
+                <Clock class="w-4 h-4" />
+              </div>
+              <div>
+                <h4 class="text-sm font-bold text-slate-900">Gradual Onset</h4>
+                <p class="text-xs text-slate-500 mt-0.5 leading-snug">
+                  Developed progressively over several days or weeks.
+                </p>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- 4. Duration -->
+        <div class="space-y-2">
+          <span class="block text-xs font-bold text-slate-900 uppercase tracking-wider">
+            Duration &bull; How long have you felt this way? *
+          </span>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {#each durationOptions as opt}
+              <button
+                type="button"
+                on:click={() => duration = opt}
+                class="py-2.5 px-3 rounded-xl text-xs font-medium border text-center transition-all cursor-pointer
+                  {duration === opt ? 'bg-slate-900 text-white border-slate-900 font-bold' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}"
+              >
+                {opt}
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <!-- 5. Pain / Discomfort Severity Scale (1-10) -->
+        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-900 uppercase tracking-wider">
+              Discomfort / Pain Severity Scale:
+            </span>
+            <span class="font-mono text-xs font-bold px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-900">
+              {painScale} / 10 &bull; {painScale >= 8 ? 'Severe' : painScale >= 5 ? 'Moderate' : 'Mild'}
             </span>
           </div>
-        </div>
 
-        <!-- 1. Visit Type Selection -->
-        <div class="space-y-3">
-          <div class="flex items-center justify-between">
-            <div>
-              <h3 class="text-sm font-black text-slate-950 uppercase tracking-wider">
-                1. Select Consultation Visit Category <span class="text-rose-600 font-black">*</span>
-              </h3>
-              <p class="text-xs font-semibold text-slate-600 mt-0.5">
-                Choose the primary clinical reason for scheduling with university health services.
-              </p>
-            </div>
-            {#if isVisitTypeSelected}
-              <span class="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1">
-                <Check class="w-3.5 h-3.5 stroke-[3]" /> Completed
-              </span>
-            {:else if showValidationErrors}
-              <span class="text-xs font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">
-                Selection Required
-              </span>
-            {/if}
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            {#each visitTypes as vt}
-              <button
-                type="button"
-                on:click={() => { visitType = vt.title; }}
-                class="p-4 rounded-2xl border text-left transition-all cursor-pointer flex items-start gap-3.5
-                  {visitType === vt.title 
-                    ? 'border-emerald-600 bg-emerald-50/60 shadow-xs ring-1 ring-emerald-600/30' 
-                    : showValidationErrors && !visitType 
-                      ? 'border-rose-300 hover:border-rose-400 bg-rose-50/10' 
-                      : 'border-slate-200 hover:border-slate-300 bg-white'}"
-              >
-                <div class="p-2.5 rounded-xl {visitType === vt.title ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-700'} shrink-0 mt-0.5">
-                  <svelte:component this={vt.icon} class="w-5 h-5" />
-                </div>
-                <div class="flex-1">
-                  <div class="flex items-center justify-between">
-                    <p class="text-sm font-extrabold text-slate-950">{vt.title}</p>
-                    {#if visitType === vt.title}
-                      <Check class="w-4 h-4 text-emerald-700 stroke-[3]" />
-                    {/if}
-                  </div>
-                  <p class="text-xs text-slate-600 font-medium mt-1 leading-relaxed">{vt.desc}</p>
-                </div>
-              </button>
-            {/each}
-          </div>
-        </div>
-
-        <!-- 2. Consultation Date -->
-        <div class="space-y-3 pt-6 border-t border-slate-200">
-          <div class="flex items-center justify-between">
-            <div>
-              <h3 class="text-sm font-black text-slate-950 uppercase tracking-wider">
-                2. Select Consultation Date <span class="text-rose-600 font-black">*</span>
-              </h3>
-              <p class="text-xs font-semibold text-slate-600 mt-0.5">
-                Choose your preferred appointment day with Jaja Health Center.
-              </p>
-            </div>
-            {#if isDateSelected}
-              <span class="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1">
-                <Check class="w-3.5 h-3.5 stroke-[3]" /> Completed
-              </span>
-            {:else if showValidationErrors}
-              <span class="text-xs font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">
-                Selection Required
-              </span>
-            {/if}
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {#each dates as d}
-              <button
-                type="button"
-                on:click={() => { preferredDate = d; }}
-                class="p-4 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between
-                  {preferredDate === d 
-                    ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold shadow-2xs ring-1 ring-emerald-600/30' 
-                    : showValidationErrors && !preferredDate 
-                      ? 'border-rose-300 bg-rose-50/10 text-slate-800 font-semibold' 
-                      : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-800 font-semibold'}"
-              >
-                <div class="flex items-center gap-2.5">
-                  <Calendar class="w-4 h-4 text-emerald-700 shrink-0" />
-                  <span class="text-xs sm:text-sm">{d}</span>
-                </div>
-                {#if preferredDate === d}
-                  <Check class="w-4 h-4 text-emerald-700 stroke-[3]" />
-                {/if}
-              </button>
-            {/each}
-          </div>
-        </div>
-
-        <!-- 3. Optional Pre-Booking Notes -->
-        <div class="space-y-2 pt-6 border-t border-slate-200">
-          <label for="notes" class="block text-xs font-extrabold text-slate-950 uppercase tracking-wider">
-            3. Pre-Booking Notes or Physician Request (Optional)
-          </label>
           <input
-            id="notes"
-            type="text"
-            placeholder="e.g. Need follow-up check for lab tests done on Tuesday, or preferred Dr. Adeleke"
-            bind:value={patientNotes}
-            class="w-full px-4 py-3 rounded-xl border border-slate-300 bg-white text-slate-900 font-medium placeholder:font-normal placeholder:text-slate-400 text-sm focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/10"
+            type="range"
+            min="1"
+            max="10"
+            bind:value={painScale}
+            class="w-full accent-blue-600 cursor-pointer"
           />
+
+          <div class="flex justify-between text-[11px] text-slate-400 font-medium">
+            <span>1 (Mild / Minor discomfort)</span>
+            <span>5 (Moderate)</span>
+            <span>10 (Severe / Worst pain)</span>
+          </div>
         </div>
 
-        <!-- Action Bar: Enforces completion before proceeding -->
-        <div class="pt-6 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div class="text-xs text-slate-600 font-bold">
-            {#if isBookingComplete}
-              <span class="text-emerald-700 flex items-center gap-1 font-extrabold">
-                <CheckCircle2 class="w-4 h-4 text-emerald-600" />
-                Both booking details completed. Ready for pre-questionnaire.
-              </span>
-            {:else}
-              <span class="text-slate-500 font-medium">
-                Complete both required sections above to proceed to clinical symptom questionnaire.
-              </span>
-            {/if}
-          </div>
+        <!-- Disclaimer -->
+        <p class="text-[11px] text-slate-500 leading-relaxed border-t border-slate-100 pt-4">
+          * CLINIKS uses artificial intelligence strictly to organize your narrative for the attending physician. The AI does not diagnose illnesses or prescribe medication.
+        </p>
 
+        <!-- Submit Button -->
+        <div class="pt-2">
           <button
             type="button"
-            on:click={handleProceedToQuestionnaire}
-            class="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-base shadow-md cursor-pointer inline-flex items-center justify-center gap-2.5 transition-all
-              {isBookingComplete 
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white hover:scale-102 active:scale-98 shadow-emerald-700/20' 
-                : 'bg-slate-800 hover:bg-slate-900 text-white'}"
+            on:click={handleSubmit}
+            disabled={isSubmitting}
+            class="w-full py-3.5 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm shadow-sm transition-all cursor-pointer flex items-center justify-center gap-2"
           >
-            {#if !isBookingComplete}
-              <Lock class="w-4 h-4 text-amber-400" />
-            {/if}
-            <span>Proceed to Pre-Questionnaire</span>
-            <ArrowRight class="w-5 h-5 stroke-[2.5]" />
+            <Sparkles class="w-4 h-4" />
+            <span>{isSubmitting ? 'Analyzing & Structuring...' : 'Submit to Doctor for Review & Scheduling'}</span>
           </button>
         </div>
 
-      </Card>
-
-    </div>
-
-  <!-- ========================================================================= -->
-  <!-- STEP 2: PRE-QUESTIONNAIRE PAGE (WITH UIVERSE OVAL & AI VOICE ASSISTANT)   -->
-  <!-- ========================================================================= -->
-  {:else if currentStep === 2}
-    <div class="space-y-6 animate-in slide-in-from-right-4 duration-150">
-      
-      <!-- Booking Context Summary Banner -->
-      <div class="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-emerald-950">
-        <div class="flex items-center gap-2">
-          <CheckCircle2 class="w-4 h-4 text-emerald-700" />
-          <span>Booking: <strong>{visitType}</strong> &bull; {preferredDate}</span>
-        </div>
-        <button
-          type="button"
-          on:click={handleBackToBooking}
-          class="text-emerald-800 hover:text-emerald-950 underline decoration-2 cursor-pointer font-extrabold"
-        >
-          Edit Booking Details
-        </button>
       </div>
 
-      <!-- The Single-Page Pre-Questionnaire Component -->
-      <StudentIntakeWizard
-        studentProfile={student}
-        on:submitted={handleBookingComplete}
-      />
+    </div>
+
+  {:else}
+    <!-- ========================================================================= -->
+    <!-- POST-SUBMISSION CONFIRMATION (Shows AI Brief & 1-10 Score)                 -->
+    <!-- ========================================================================= -->
+    <div class="space-y-6 animate-in fade-in zoom-in-95 duration-150">
+      
+      <!-- Confirmation Banner -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-sm space-y-6">
+        <div class="flex items-center gap-3">
+          <div class="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+            <CheckCircle2 class="w-7 h-7" />
+          </div>
+          <div>
+            <h2 class="text-xl font-bold text-slate-900">Pre-Consultation Intake Transmitted</h2>
+            <p class="text-xs text-slate-500 font-mono mt-0.5">
+              Ref #{submittedCase.id} &bull; Transmitted to Attending Physician Workstation
+            </p>
+          </div>
+        </div>
+
+        <div class="p-4 rounded-xl bg-blue-50 border border-blue-200 text-xs text-slate-800 space-y-1.5 leading-relaxed">
+          <div class="font-bold text-blue-900 flex items-center gap-1.5">
+            <Clock class="w-4 h-4 text-blue-600" />
+            <span>Next Step: Doctor Review &amp; Time Scheduling</span>
+          </div>
+          <p>
+            Dr. Adeleke is reviewing your structured brief. The doctor will verify your urgency score and assign your exact arrival time slot shortly.
+          </p>
+        </div>
+
+        <!-- The 3 Structured Brief Sections Generated for Doctor -->
+        <div class="border border-slate-200 rounded-xl overflow-hidden text-xs">
+          
+          <div class="bg-slate-100 p-3 border-b border-slate-200 flex items-center justify-between">
+            <span class="font-bold uppercase tracking-wider text-slate-700 text-[11px] font-mono">
+              AI-Generated Doctor's Brief
+            </span>
+            <span class="font-mono text-xs font-bold px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-900">
+              Preliminary Urgency: {submittedCase.aiBrief.preliminaryScore} / 10
+            </span>
+          </div>
+
+          <div class="p-4 space-y-4 bg-white">
+            <!-- 1. Chief Complaint -->
+            <div>
+              <span class="text-slate-400 uppercase font-mono text-[10px] block font-bold">1. Chief Complaint:</span>
+              <p class="text-slate-900 font-semibold mt-0.5 text-sm">
+                "{submittedCase.aiBrief.chiefComplaint}"
+              </p>
+            </div>
+
+            <!-- 2. Symptom Timeline -->
+            <div>
+              <span class="text-slate-400 uppercase font-mono text-[10px] block font-bold">2. Symptom Timeline:</span>
+              <p class="text-slate-700 font-medium mt-0.5">
+                {submittedCase.aiBrief.symptomTimeline}
+              </p>
+            </div>
+
+            <!-- 3. Red Flags -->
+            <div>
+              <span class="text-slate-400 uppercase font-mono text-[10px] block font-bold">3. Clinical Red Flags:</span>
+              <div class="mt-1 space-y-1">
+                {#each submittedCase.aiBrief.redFlags as rf}
+                  <p class="text-xs font-medium {submittedCase.aiBrief.isEmergency ? 'text-red-700' : 'text-slate-700'}">
+                    &bull; {rf}
+                  </p>
+                {/each}
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex items-center gap-3 pt-2">
+          <button
+            type="button"
+            on:click={goToDashboard}
+            class="flex-1 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition-colors cursor-pointer text-center"
+          >
+            Go to My Dashboard
+          </button>
+          <button
+            type="button"
+            on:click={resetNewIntake}
+            class="py-3 px-4 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs transition-colors cursor-pointer"
+          >
+            Submit Another Intake
+          </button>
+        </div>
+
+      </div>
 
     </div>
-  {/if}
-
   {/if}
 
 </div>
