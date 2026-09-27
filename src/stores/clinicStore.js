@@ -364,6 +364,62 @@ function createClinicStore() {
       });
     },
 
+    // Clinician Radial Scheduler & Badge Issuance (Emergency vs Check-Up)
+    schedulePatient: (triageId, { scheduledTime, score, section, room, notes, briefEdits }) => {
+      recordLocalChange('SCHEDULE_PATIENT', { triageId, scheduledTime, score, section });
+      update(state => {
+        const numericScore = Number(score) || 5;
+        const isEmg = section === 'EMERGENCY' || numericScore >= 8;
+        const targetSection = isEmg ? 'EMERGENCY' : 'CHECK_UP';
+        const prefix = isEmg ? 'EMG' : 'CHK';
+        const count = state.triageQueue.filter(p => p.assignedSection === targetSection || p.assignedBadge?.startsWith(prefix)).length;
+        const badge = `${prefix}-${String(count + 1).padStart(3, '0')}`;
+
+        const updatedQueue = state.triageQueue.map(item => {
+          if (item.id === triageId) {
+            return {
+              ...item,
+              status: 'APPROVED',
+              scheduledTime: scheduledTime,
+              assignedSection: targetSection,
+              assignedBadge: badge,
+              assignedRoom: room || item.assignedRoom || (isEmg ? 'Room 101 (Emergency & Acute Bay)' : 'Room 104 (General Physician 1)'),
+              clinicianNotes: notes || item.clinicianNotes || ' Urgency verified and arrival time scheduled by attending clinician.',
+              aiBrief: {
+                ...item.aiBrief,
+                chiefComplaint: briefEdits?.chiefComplaint || item.aiBrief?.chiefComplaint || item.complaint,
+                symptomTimeline: briefEdits?.symptomTimeline || item.aiBrief?.symptomTimeline || `Duration: ${item.duration}. Pain: ${numericScore}/10`,
+                redFlags: briefEdits?.redFlags || item.aiBrief?.redFlags || (item.aiTriage?.safetyWarnings?.length ? item.aiTriage.safetyWarnings : ['None detected']),
+                preliminaryScore: numericScore,
+                suggestedSection: targetSection
+              },
+              aiTriage: {
+                ...item.aiTriage,
+                urgencyScore: numericScore * 10,
+                suggestedPriority: numericScore >= 8 ? 'HIGH' : numericScore >= 5 ? 'MODERATE' : 'ROUTINE'
+              }
+            };
+          }
+          return item;
+        });
+
+        let updatedAppt = state.activePatientAppointment;
+        if (updatedAppt && updatedAppt.id === triageId) {
+          updatedAppt = updatedQueue.find(i => i.id === triageId);
+        }
+
+        return {
+          ...state,
+          triageQueue: updatedQueue,
+          activePatientAppointment: updatedAppt,
+          systemNotification: {
+            type: 'success',
+            message: `Patient scheduled for ${scheduledTime} (${targetSection === 'EMERGENCY' ? 'Emergency Section' : 'Check-Up Section'}, Badge ${badge}).`
+          }
+        };
+      });
+    },
+
     // Save Patient Vitals (Thesis Stage 3)
     savePatientVitals: (patientId, vitalsData) => {
       recordLocalChange('SAVE_VITALS', { patientId, vitalsData });
