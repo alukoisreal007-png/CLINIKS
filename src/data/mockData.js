@@ -49,6 +49,13 @@ export const initialTriageQueue = [
     complaint: 'Severe throbbing headache, high fever since morning, severe body weakness and nausea. Unable to stand for long.',
     painScale: 7,
     duration: '1 to 2 days',
+    onset: 'sudden',
+    scheduledTime: '10:00 AM',
+    assignedSection: 'EMERGENCY',
+    assignedBadge: 'EMG-001',
+    status: 'APPROVED',
+    assignedRoom: 'Room 101 (Isolation & Acute Triage)',
+    assignedSession: 'Immediate Stat (Now)',
     answers: [
       'Breathing: No shortness of breath',
       'Neck / Neuro: Slight neck stiffness & light sensitivity reported',
@@ -56,21 +63,24 @@ export const initialTriageQueue = [
       'Mobility: Requires physical support to walk',
       'Medications: Paracetamol (minimal relief); No known drug allergies'
     ],
+    aiBrief: {
+      chiefComplaint: 'Severe throbbing headache, high fever since morning, severe weakness and nausea.',
+      symptomTimeline: 'Onset: Sudden. Duration: 1 to 2 days. Discomfort: 8/10.',
+      redFlags: ['Acute fever with neck stiffness (meningeal irritation signs)'],
+      preliminaryScore: 8,
+      suggestedSection: 'EMERGENCY'
+    },
     aiTriage: {
       suggestedPriority: 'HIGH',
-      urgencyScore: 82,
-      patientBrief: '34-year-old female presenting with acute high-grade fever, severe throbbing headache, photophobia, and reported neck stiffness for 24-48 hours. Pain level 7/10 with impaired ambulation. Significant acute discomfort requiring prompt physical and neurological assessment.',
+      urgencyScore: 80,
+      patientBrief: '34-year-old female presenting with acute high-grade fever, severe throbbing headache, photophobia, and reported neck stiffness for 24-48 hours. Discomfort level 8/10.',
       safetyWarnings: [
-        'RED FLAG: Acute fever accompanied by reported neck stiffness. Assess for meningeal irritation.',
-        'Impaired mobility: Patient reported difficulty standing in waiting area.'
+        'RED FLAG: Acute fever accompanied by reported neck stiffness. Assess for meningeal irritation.'
       ],
       suggestedRoom: 'Room 101 (Isolation & Acute Triage)',
       recommendedSession: 'Immediate Stat (Now)',
-      source: 'Clinical Heuristics'
-    },
-    status: 'PENDING_APPROVAL',
-    assignedRoom: 'Room 101 (Isolation & Acute Triage)',
-    assignedSession: 'Immediate Stat (Now)'
+      source: 'CLINIKS AI Engine'
+    }
   },
   {
     id: 'TRG-0072',
@@ -84,6 +94,13 @@ export const initialTriageQueue = [
     complaint: 'Persistent dry cough for 5 days with mild chest tightness and evening low-grade chills. Difficulty sleeping.',
     painScale: 4,
     duration: '3 to 5 days',
+    onset: 'gradual',
+    scheduledTime: '10:30 AM',
+    assignedSection: 'CHECK_UP',
+    assignedBadge: 'CHK-001',
+    status: 'APPROVED',
+    assignedRoom: 'Room 104 (General Physician 1)',
+    assignedSession: 'Morning Session (10:30 AM)',
     answers: [
       'Breathing: Mild chest tightness on exertion',
       'Neck / Neuro: Normal, no neck stiffness',
@@ -91,20 +108,24 @@ export const initialTriageQueue = [
       'Mobility: Ambulatory without support',
       'Medications: OTC cough syrup; Hypertensive on Amlodipine 5mg'
     ],
+    aiBrief: {
+      chiefComplaint: 'Persistent dry cough for 5 days with mild chest tightness and evening low-grade chills.',
+      symptomTimeline: 'Onset: Gradual. Duration: 3 to 5 days. Discomfort: 4/10.',
+      redFlags: ['Known hypertensive patient reporting chest tightness. Assess cardiac profile.'],
+      preliminaryScore: 6,
+      suggestedSection: 'CHECK_UP'
+    },
     aiTriage: {
       suggestedPriority: 'MODERATE',
-      urgencyScore: 58,
-      patientBrief: '48-year-old hypertensive male with 5-day history of persistent non-productive cough, mild exertional chest tightness, and nocturnal chills. Pain level 4/10. Hemodynamically stable, ambulating independently.',
+      urgencyScore: 60,
+      patientBrief: '48-year-old hypertensive male with 5-day history of persistent non-productive cough, mild exertional chest tightness, and nocturnal chills. Pain level 4/10.',
       safetyWarnings: [
-        'Known hypertensive patient with chest tightness. Rule out atypical cardiac or lower respiratory infection.'
+        'Known hypertensive patient with chest tightness. Rule out atypical cardiac risk.'
       ],
       suggestedRoom: 'Room 104 (General Physician 1)',
-      recommendedSession: 'Morning Session (11:00 AM)',
-      source: 'Clinical Heuristics'
-    },
-    status: 'PENDING_APPROVAL',
-    assignedRoom: 'Room 104 (General Physician 1)',
-    assignedSession: 'Morning Session (11:00 AM)'
+      recommendedSession: 'Morning Session (10:30 AM)',
+      source: 'CLINIKS AI Engine'
+    }
   },
   {
     id: 'TRG-0073',
@@ -118,6 +139,13 @@ export const initialTriageQueue = [
     complaint: 'Routine follow-up for chronic peptic ulcer refill and recent mild epigastric burning after meals.',
     painScale: 2,
     duration: 'More than a week',
+    onset: 'gradual',
+    scheduledTime: '11:15 AM',
+    assignedSection: 'CHECK_UP',
+    assignedBadge: 'CHK-002',
+    status: 'APPROVED',
+    assignedRoom: 'Room 108 (General Consultation & Refills)',
+    assignedSession: 'Mid-Day Session (11:15 AM)',
     answers: [
       'Breathing: Normal, no difficulty',
       'Neck / Neuro: Normal',
@@ -125,18 +153,22 @@ export const initialTriageQueue = [
       'Mobility: Normal mobility',
       'Medications: Omeprazole 20mg daily'
     ],
+    aiBrief: {
+      chiefComplaint: 'Routine follow-up for chronic peptic ulcer refill and recent mild epigastric burning after meals.',
+      symptomTimeline: 'Onset: Gradual. Duration: More than a week. Discomfort: 2/10.',
+      redFlags: ['No red flags detected (stable profile)'],
+      preliminaryScore: 2,
+      suggestedSection: 'CHECK_UP'
+    },
     aiTriage: {
       suggestedPriority: 'ROUTINE',
-      urgencyScore: 25,
-      patientBrief: '22-year-old female presenting for routine chronic prescription refill for peptic ulcer disease. Mild postprandial dyspepsia. No acute distress or red flag symptoms.',
+      urgencyScore: 20,
+      patientBrief: '22-year-old female presenting for routine chronic prescription refill for peptic ulcer disease. Mild postprandial dyspepsia. No acute distress.',
       safetyWarnings: [],
       suggestedRoom: 'Room 108 (General Consultation & Refills)',
-      recommendedSession: 'Mid-Day Session (12:00 PM)',
-      source: 'Clinical Heuristics'
-    },
-    status: 'APPROVED',
-    assignedRoom: 'Room 108 (General Consultation & Refills)',
-    assignedSession: 'Mid-Day Session (12:00 PM)'
+      recommendedSession: 'Mid-Day Session (11:15 AM)',
+      source: 'CLINIKS AI Engine'
+    }
   },
   {
     id: 'TRG-0074',
@@ -150,6 +182,13 @@ export const initialTriageQueue = [
     complaint: 'Sudden onset severe right lower quadrant abdominal pain with repeated vomiting and inability to keep fluids down.',
     painScale: 9,
     duration: 'Less than 6 hours',
+    onset: 'sudden',
+    scheduledTime: null, // Awaiting Doctor Review on Radial Clock!
+    assignedSection: 'EMERGENCY',
+    assignedBadge: null,
+    status: 'PENDING_APPROVAL',
+    assignedRoom: 'Room 102 (Emergency & Nebulization Bay)',
+    assignedSession: 'Immediate Stat (Now)',
     answers: [
       'Breathing: Shallow breathing due to severe abdominal pain',
       'Neck / Neuro: Normal',
@@ -157,21 +196,24 @@ export const initialTriageQueue = [
       'Mobility: Cannot bear weight, walked in bent over',
       'Medications: Took antacid 2 hours ago with no relief'
     ],
+    aiBrief: {
+      chiefComplaint: 'Sudden onset severe right lower quadrant abdominal pain with repeated vomiting.',
+      symptomTimeline: 'Onset: Sudden. Duration: Less than 6 hours. Discomfort: 9/10.',
+      redFlags: ['RED FLAG: Acute localized severe abdominal pain with intractable vomiting (acute surgical abdomen risk)'],
+      preliminaryScore: 9,
+      suggestedSection: 'EMERGENCY'
+    },
     aiTriage: {
       suggestedPriority: 'HIGH',
-      urgencyScore: 94,
-      patientBrief: '29-year-old male with acute severe right lower abdominal pain (9/10), nausea, intractable vomiting, and peritoneal guarding signs. Onset under 6 hours. High suspicion for acute appendicitis or acute surgical abdomen.',
+      urgencyScore: 90,
+      patientBrief: '29-year-old male with acute severe right lower abdominal pain (9/10), intractable vomiting. High suspicion for acute appendicitis.',
       safetyWarnings: [
-        'RED FLAG: Severe acute localized abdominal pain with persistent vomiting. Immediate surgical evaluation indicated.',
-        'Intractable dehydration risk: Unable to tolerate oral fluids.'
+        'RED FLAG: Severe acute localized abdominal pain with persistent vomiting. Immediate surgical evaluation indicated.'
       ],
       suggestedRoom: 'Room 102 (Emergency & Nebulization Bay)',
       recommendedSession: 'Immediate Stat (Now)',
-      source: 'Clinical Heuristics'
-    },
-    status: 'PENDING_APPROVAL',
-    assignedRoom: 'Room 102 (Emergency & Nebulization Bay)',
-    assignedSession: 'Immediate Stat (Now)'
+      source: 'CLINIKS AI Engine'
+    }
   },
   {
     id: 'TRG-0075',
